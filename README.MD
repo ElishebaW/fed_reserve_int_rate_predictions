@@ -5,7 +5,7 @@ to make decisions on investments.
 
 - This is a supervised learning multi- regression problem using batch processing. 
 
-- Will use root mean squared error as the metric to evaluate the model. 
+- Will use root mean squared error as the metric to evaluate the model and it fits the business objective because this is a regression model and it will determine errors in predictions. 
 
 - The Effective Federal Reserve Interest Rate is the average of the federal reserve interest rate over the past 12 months. 
 
@@ -20,8 +20,6 @@ to make decisions on investments.
     -   Federal Funds Target Rate (the primary policy tool being predicted)
     -   Federal Funds Upper and Lower Target (the boundaries set by the Fed for the effective rate)
     -   Time Period (Year, Month, and Day for time-series analysis)
-
-
 
 
 
