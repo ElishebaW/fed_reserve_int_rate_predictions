@@ -2,49 +2,38 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from helper_functions import load_interest_rate_data
-from sklearn.model_selection import train_test_split
+from helper_functions import (
+    correlation_with_target,
+    feature_engineer_interest_rates,
+    get_features_and_labels,
+    load_interest_rate_data,
+    make_numeric_pipeline,
+    plot_scatter_matrix,
+    plot_target_vs_feature,
+    quick_sanity_peeks,
+    select_numeric_features,
+    split_train_test_chronological,
+)
 from sklearn.model_selection import TimeSeriesSplit
-from pandas.plotting import scatter_matrix
-from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
+from sklearn.compose import TransformedTargetRegressor
+from sklearn.linear_model import LinearRegression
 
 # Get data once
 data = load_interest_rate_data().copy()
 
-# Basic look if needed
-# print(data.head())
-# print(data.info())
-# print(data.describe())
+# Quick sanity peeks (uncomment as needed)
+# quick_sanity_peeks(data)
 
-# Build a proper datetime from Year/Month/Day
-data["Day"] = data["Day"].fillna(1).astype(int)
-data["date"] = pd.to_datetime(dict(year=data["Year"], month=data["Month"], day=data["Day"]), errors="coerce")
-data = data.sort_values("date")
+# Build a proper datetime, fill targets, and keep optional engineered cols nearby.
+data = feature_engineer_interest_rates(data)
 
-# Feature engineering (similar style to rooms_per_house, etc.)
-# Fill missing upper/lower targets with target rate, then effective rate as last resort.
-upper = (
-    data["Federal Funds Upper Target"]
-    .fillna(data["Federal Funds Target Rate"])
-    .fillna(data["Effective Federal Funds Rate"])
-)
-lower = (
-    data["Federal Funds Lower Target"]
-    .fillna(data["Federal Funds Target Rate"])
-    .fillna(data["Effective Federal Funds Rate"])
-)
-
-data["rate_spread"] = (upper - lower).fillna(0)
-data["implementation_gap"] = (data["Effective Federal Funds Rate"] - upper).fillna(0)
-data["real_ffr"] = data["Effective Federal Funds Rate"] - data["Inflation Rate"]
-
-train_set, test_set = train_test_split(data, test_size=0.2, shuffle=False)
+train_set, test_set = split_train_test_chronological(data, test_size=0.2)
 train_set = train_set.drop(columns=["date"])
 test_set  = test_set.drop(columns=["date"])
 
 
-#Cross validation
-
+# Optional: Cross validation (uncomment to use)
 # tscv = TimeSeriesSplit(n_splits=5)
 # for train_idx, test_idx in tscv.split(data):
 #     train_fold = data.iloc[train_idx]
@@ -53,28 +42,38 @@ test_set  = test_set.drop(columns=["date"])
 
 train_set_copy = train_set.copy()
 
-# Correlation on numeric columns only (avoid 'source_file' strings)
-numeric_cols = train_set_copy.select_dtypes(include=[np.number])
-corr_matrix = numeric_cols.corr()
-print(corr_matrix["Federal Funds Target Rate"].sort_values(ascending=False))
+# Correlation on numeric columns only (avoids non-numeric 'source_file')
+# print(correlation_with_target(train_set_copy, "Federal Funds Target Rate"))
 
-# attributes = ["Federal Funds Target Rate", "Effective Federal Funds Rate", "Inflation Rate",
-#               "Unemployment Rate"]
-# scatter_matrix(train_set_copy[attributes], figsize=(12, 8))
-# plt.show()
+attributes = ["Federal Funds Target Rate", "Effective Federal Funds Rate",
+              "Inflation Rate", "Unemployment Rate"]
+# Optional: uncomment to visualize
+# plot_scatter_matrix(train_set_copy, attributes)
 
 
-# train_set_copy.plot(kind="scatter", x="Federal Funds Target Rate", y="Inflation Rate",
-#              alpha=0.1, grid=True)
-# plt.show()
+# Optional: uncomment to visualize
+# plot_target_vs_feature(train_set_copy,
+#                        target_col="Federal Funds Target Rate",
+#                        feature_col="Inflation Rate",
+#                        alpha=0.1, grid=True)
 
-train_set_copy = train.drop(columns=["Federal Funds Target Rate"], axis=1)
-train_set_copy_labels = train_set_copy["Federal Funds Target Rate"].copy()
+features, labels, label_mask = get_features_and_labels(train_set, "Federal Funds Target Rate")
+num_features = select_numeric_features(features)
 
-imputer = SimpleImputer(strategy="median")
-train_set_copy_numeric =  train_set_copy.select_dtypes(include=[np.number])
-train_set_copy_numeric = imputer.fit(train_set_copy_numeric)
+# Numeric preprocessing pipeline: median impute then standardize
+num_pipeline = make_numeric_pipeline()
 
+# Fit/transform on rows with non-null labels
+X_train = num_features.loc[label_mask]
+y_train = labels.loc[label_mask]
+X_train_prepared = num_pipeline.fit_transform(X_train)
+print("Post-pipeline NaNs per column:",
+      pd.DataFrame(X_train_prepared, columns=num_features.columns).isna().sum())
 
+model = TransformedTargetRegressor(LinearRegression(),
+                                   transformer=StandardScaler())
+model.fit(X_train_prepared, y_train)
 
-
+# Predict on a small batch (first 5 rows) using the same pipeline
+predictions = model.predict(num_pipeline.transform(num_features.iloc[:5]))
+print("predictions: ", predictions)
