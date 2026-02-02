@@ -1,0 +1,16 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fed-reserve-int-rate-predictions-ingress
+spec:
+  rules:
+  - host: fed-reserve-int-rate-predictions.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: fed-reserve-int-rate-predictions-service
+            port:
+              number: 80
