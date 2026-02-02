@@ -6,6 +6,7 @@ from helper_functions import load_interest_rate_data
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import TimeSeriesSplit
 from pandas.plotting import scatter_matrix
+from sklearn.impute import SimpleImputer
 
 # Get data once
 data = load_interest_rate_data().copy()
@@ -67,7 +68,13 @@ print(corr_matrix["Federal Funds Target Rate"].sort_values(ascending=False))
 #              alpha=0.1, grid=True)
 # plt.show()
 
+train_set_copy = train.drop(columns=["Federal Funds Target Rate"], axis=1)
+train_set_copy_labels = train_set_copy["Federal Funds Target Rate"].copy()
 
-Stoped at Prepare the Data for Machine Learning Algorithms. Pretty fun so far!
+imputer = SimpleImputer(strategy="median")
+train_set_copy_numeric =  train_set_copy.select_dtypes(include=[np.number])
+train_set_copy_numeric = imputer.fit(train_set_copy_numeric)
+
+
 
 
