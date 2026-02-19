@@ -18,6 +18,7 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 from sklearn.compose import TransformedTargetRegressor
 from sklearn.linear_model import LinearRegression
+from sklearn.pipeline import make_pipeline
 
 # Get data once
 data = load_interest_rate_data().copy()
@@ -76,4 +77,10 @@ model.fit(X_train_prepared, y_train)
 
 # Predict on a small batch (first 5 rows) using the same pipeline
 predictions = model.predict(num_pipeline.transform(num_features.iloc[:5]))
-print("predictions: ", predictions)
+
+
+lin_reg = make_pipeline(num_pipeline, LinearRegression())
+lin_reg.fit(X_train_prepared, y_train)
+predictions = lin_reg.predict(X_train_prepared)
+print("predictions: ", predictions[:5].round(-2) )
+print("actual: ", y_train.iloc[:5].values )
