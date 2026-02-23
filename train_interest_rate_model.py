@@ -130,7 +130,7 @@ tree_test_pred = tree_reg.predict(test_num.loc[test_mask])
 tree_test_rmse = root_mean_squared_error(y_test, tree_test_pred)
 print("tree_test_rmse:", tree_test_rmse)
 
-
+#Random Forest regression model fit on raw numeric features (pipeline handles prep)
 forest_reg = make_pipeline(make_numeric_pipeline(),
                            RandomForestRegressor(random_state=42))
 forest_rmses = -cross_val_score(
