@@ -1,83 +1,141 @@
-- Business Objective: Predict the future federal reserve interest rate in 2027 based on the current and previous interest rates
-to make decisions on investments. 
+# Fed Reserve Interest Rate Predictions
 
-- The current situation is unknown so this would be a use case to get informed using a machine learning model. 
+This project trains a time-series-aware regression model to predict the `Federal Funds Target Rate`.
 
-- This is a supervised learning multi- regression problem using batch processing. 
+## Project structure
+- `train_interest_rate_model.py`: training + tuning job (HalvingRandomSearchCV)
+- `helper_functions.py`: data loading and preprocessing helpers
+- `predictor.py`: Flask prediction server for Vertex custom serving
+- `Dockerfile.train`: training container
+- `Dockerfile`: serving container
 
-- Will use root mean squared error as the metric to evaluate the model and it fits the business objective because this is a regression model and it will determine errors in predictions. 
+## Architecture
+![Deployment Architecture](docs/architecture.png)
 
-- The Effective Federal Reserve Interest Rate is the average of the federal reserve interest rate over the past 12 months. 
+### Runtime request flow
+1. User sends natural language prompt to Streamlit.
+2. Gemini extracts required numeric features in strict JSON format.
+3. Streamlit validates ranges and required fields.
+4. Streamlit calls Vertex endpoint with structured `instances`.
+5. Predictor validates schema and returns prediction.
+6. Streamlit renders prediction/explanation and captures human rating.
+7. App writes eval row and publishes Cloud Monitoring custom metrics.
 
-- I assumed I had all the data I needed to make a prediction and train the model, but maybe I need more data. 
+### Security and reliability controls
+- Input safety: sanitize prompt text, cap request size, cap session request rate.
+- Prompt injection resistance: structured extraction prompt with strict output schema.
+- Inference hardening: reject unexpected/missing/non-numeric fields.
+- Failure isolation: metrics publishing is fail-open (user request still succeeds).
+- Observability: latency, success rate, missing-feature rate, human helpfulness metrics.
 
-- These are the fields I will need to make a prediction:
+### Service mapping (AWS-style mental model)
+- `Artifact Registry` ~= `Amazon ECR`
+- `Cloud Build` ~= `AWS CodeBuild`
+- `Cloud Storage` ~= `Amazon S3`
+- `Vertex AI Endpoint` ~= `SageMaker Endpoint`
+- `Cloud Monitoring` ~= `CloudWatch`
 
-    -   Inflation Rate (specifically the Personal Consumption Expenditures (PCE) index, which is the Fed's preferred gauge)( This is blank in some rows in the dataset)
-    -   Unemployment Rate (a key component of the Fed's "dual mandate" for maximum employment)
-    -   Real GDP (Percent Change) (used to assess economic growth and potential overheating)
-    -   Effective Federal Funds Rate (provides the historical baseline for modeling future shifts)
-    -   Federal Funds Target Rate (the primary policy tool being predicted)
-    -   Federal Funds Upper and Lower Target (the boundaries set by the Fed for the effective rate)
-    -   Time Period (Year, Month, and Day for time-series analysis# Model Tuning Notes (Interest Rate Project)
+## Training behavior
+Training script:
+- downloads and prepares data
+- performs chronological split
+- removes leakage-prone columns from predictors
+- tunes a pipeline: preprocessing + SelectFromModel + RandomForest
+- evaluates RMSE on held-out chronological test split
+- saves artifacts
 
-## Which tuning method is most appropriate here?
-For this project, **HalvingRandomSearchCV** is the best default choice.
+Saved artifacts:
+- `model.joblib`
+- `feature_columns.json`
 
-### Why
-- You are using **time-series validation** (`TimeSeriesSplit`), so each candidate is relatively expensive.
-- The Random Forest search space is multi-parameter (`max_depth`, `min_samples_split`, `min_samples_leaf`, `max_features`, `n_estimators`, etc.), where random sampling is more efficient than exhaustive grids.
-- Successive halving allocates small resources to many configs first, then focuses compute on the most promising ones.
+When running on Vertex AI custom training, artifacts are written to `$AIP_MODEL_DIR`.
 
-## Method ranking for this project
-1. **HalvingRandomSearchCV**: best first pass (efficient + broad exploration)
-2. **RandomizedSearchCV**: good baseline if you want simpler behavior
-3. **HalvingGridSearchCV**: better than full grid, but grid itself is still less efficient in high-dimensional spaces
-4. **GridSearchCV**: least efficient as an initial search over many params
+## Local training
+```bash
+python train_interest_rate_model.py
+```
 
-## Time complexity intuition
-In practice, search cost is often estimated as:
+## Vertex custom training container
+    
 
-`total_cost ~= (#configs) * (#CV folds) * (cost of one model fit)`
+Run training locally (writes model artifacts to `./model`):
+```bash
+docker run --rm -e AIP_MODEL_DIR=/app/model -v $(pwd)/model:/app/model gcr.io/<PROJECT_ID>/fed-rate-train:latest
+```
 
-### 1) GridSearchCV
-- Tries all combinations.
-- If parameter grid sizes are `k1, k2, ..., kd`, then `#configs = k1 * k2 * ... * kd`.
-- Cost (roughly):
+## Vertex custom prediction container
+Serving container expects mounted model artifacts at `MODEL_DIR` (default `/app/model`):
+- `/app/model/model.joblib`
+- `/app/model/feature_columns.json`
 
-`O((prod_i ki) * F * C_fit(n, p))`
+Build serving image:
+```bash
+docker build -t gcr.io/<PROJECT_ID>/fed-rate-serve:latest .
+```
 
-### 2) RandomizedSearchCV
-- Tries a fixed number of sampled configs: `n_iter`.
-- Cost (roughly):
+Run serving locally:
+```bash
+docker run --rm -p 8080:8080 -e MODEL_DIR=/app/model -v $(pwd)/model:/app/model gcr.io/<PROJECT_ID>/fed-rate-serve:latest
+```
 
-`O(n_iter * F * C_fit(n, p))`
+Test prediction:
+```bash
+curl -X POST http://localhost:8080/predict \
+  -H "Content-Type: application/json" \
+  -d '{"instances":[{"Year":2024,"Month":12,"Day":1,"Inflation Rate":2.8,"Unemployment Rate":4.0}]}'
+```
 
-### 3) HalvingGridSearchCV
-- Starts with many grid configs on low resources, keeps top fraction each round, increases resources each round.
-- Cost (roughly):
+## Notes
+- Keep feature schema stable between training and serving.
+- For forecasting use cases, avoid contemporaneous leakage-prone features as predictors.
 
-`O(F * sum_r [N_r * C_fit(n_r, p)])`
+## GenAI Chat Frontend (Streamlit)
+This app provides a conversational layer on top of your deployed Vertex prediction endpoint.
+It uses Gemini to extract structured model inputs from user text, then calls your endpoint for prediction.
 
-where `N_r` decreases over rounds and `n_r` (resource per candidate) increases.
+### 1) Install dependencies
+```bash
+pip install -r requirements.txt
+```
 
-### 4) HalvingRandomSearchCV
-- Same halving schedule, but with random initial configs instead of full grid.
-- Same rough form as HalvingGrid, usually with better efficiency in larger spaces.
+### 2) Authenticate for Vertex access
+```bash
+gcloud auth application-default login
+gcloud config set project fed-rate-prediction
+```
 
-## Is "time complexity" a thing in ML?
-Yes. In ML practice, people often discuss this as **computational cost** or **scaling behavior** rather than only strict asymptotic Big-O, because runtime depends on:
-- algorithm,
-- dataset size/features,
-- CV strategy,
-- and hardware.
+### 3) Set runtime environment
+```bash
+export PROJECT_ID="fed-rate-prediction"
+export REGION="us-central1"
+export VERTEX_ENDPOINT_ID="<YOUR_ENDPOINT_ID>"
+export GEMINI_MODEL="gemini-1.5-flash"
+export FEATURE_SCHEMA_PATH="model/feature_columns.json"
+```
 
-## Suggested workflow for this project
-1. Run **HalvingRandomSearchCV** with `TimeSeriesSplit` for broad search.
-2. Take the best region and run a **small local GridSearchCV** for final refinement.
-3. Evaluate final model on a strictly held-out chronological test split.
+### 4) Launch app
+```bash
+streamlit run streamlit_app.py
+```
 
+### 5) Use the app
+- Ask for a prediction in plain English.
+- If some fields are missing, complete them in **Manual Inputs (Fallback)**.
+- The app returns the predicted Federal Funds Target Rate and a concise explanation.
 
+### Backend Inference + Evaluation Settings
+Inference parameters and evaluation logging are configured in backend environment variables (not shown in the user UI):
 
+```bash
+export GEMINI_TEMPERATURE="0.2"
+export GEMINI_TOP_P="0.95"
+export GEMINI_MAX_OUTPUT_TOKENS="512"
+export EVAL_LOG_PATH="eval_logs/chat_eval.csv"
+```
 
-
+Each request appends a CSV row with:
+- prompt
+- extracted features
+- missing features
+- latency (`extract_ms`, `predict_ms`, `explain_ms`, `total_ms`)
+- success flags and prediction value
