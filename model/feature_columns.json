@@ -1,0 +1,10 @@
+{
+  "feature_columns": [
+    "Year",
+    "Month",
+    "Day",
+    "Real GDP (Percent Change)",
+    "Unemployment Rate",
+    "Inflation Rate"
+  ]
+}
