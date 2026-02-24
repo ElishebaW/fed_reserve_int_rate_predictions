@@ -6,13 +6,16 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 import vertexai
 from google.cloud import aiplatform
 from google.cloud import monitoring_v3
 from vertexai.generative_models import GenerationConfig, GenerativeModel
+from dotenv import load_dotenv
+
+load_dotenv()
 
 DEFAULT_FEATURES = ["Year", "Month", "Day", "Inflation Rate", "Unemployment Rate"]
 DEFAULT_EVAL_LOG_PATH = "eval_logs/chat_eval.csv"
@@ -20,6 +23,7 @@ DEFAULT_MAX_INPUT_CHARS = 800
 DEFAULT_MAX_RESPONSE_CHARS = 1200
 DEFAULT_MAX_REQUESTS_PER_SESSION = 60
 DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 2.0
+DEFAULT_AUTO_IMPUTE_MAX_MISSING_PCT = 0.8
 
 FEATURE_RANGES = {
     "Year": (1900.0, 2100.0),
@@ -28,6 +32,7 @@ FEATURE_RANGES = {
     "Inflation Rate": (-20.0, 40.0),
     "Unemployment Rate": (0.0, 50.0),
 }
+INTEGER_FEATURES = {"Year", "Month", "Day"}
 
 st.set_page_config(
     page_title="Fed Rate AI Copilot",
@@ -39,32 +44,53 @@ st.markdown(
     """
 <style>
 :root {
-  --bg1: #0f172a;
-  --bg2: #1e293b;
-  --text: #e2e8f0;
-  --muted: #94a3b8;
+  --bg1: #dbeafe;
+  --bg2: #e0f2fe;
+  --bg3: #f0f9ff;
+  --text: #0f172a;
+  --muted: #334155;
+  --card: rgba(255, 255, 255, 0.92);
+  --card-border: rgba(15, 23, 42, 0.16);
 }
 .stApp {
-  background: radial-gradient(80rem 40rem at 10% -20%, #164e63 0%, transparent 40%),
-              radial-gradient(80rem 40rem at 110% 0%, #1d4ed8 0%, transparent 35%),
-              linear-gradient(135deg, var(--bg1), var(--bg2));
+  background:
+    radial-gradient(90rem 45rem at -5% -15%, #93c5fd 0%, transparent 45%),
+    radial-gradient(75rem 40rem at 105% -10%, #67e8f9 0%, transparent 40%),
+    radial-gradient(75rem 40rem at 50% 115%, #a7f3d0 0%, transparent 38%),
+    linear-gradient(135deg, var(--bg1), var(--bg2) 45%, var(--bg3));
+  color: var(--text);
 }
 .block-container {padding-top: 1.5rem;}
 .hero {
-  border: 1px solid rgba(148,163,184,0.25);
+  border: 1px solid var(--card-border);
   border-radius: 18px;
   padding: 1.2rem 1.4rem;
-  background: linear-gradient(125deg, rgba(15,23,42,0.7), rgba(30,41,59,0.55));
-  box-shadow: 0 10px 35px rgba(2,6,23,0.35);
+  background: linear-gradient(125deg, var(--card), rgba(255, 255, 255, 0.92));
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
 }
 .small-note {color: var(--muted); font-size: 0.85rem;}
+.stMarkdown, .stMarkdown p, .stMarkdown li, .stMarkdown div, label, h1, h2, h3 {
+  color: var(--text) !important;
+}
+[data-testid="stChatMessage"] {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+}
+[data-testid="stExpander"] > div {
+  background: rgba(255, 255, 255, 0.72);
+  border-radius: 12px;
+}
+[data-baseweb="input"] {
+  background-color: #ffffff !important;
+}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 
-def safe_float(value: Any) -> float | None:
+def safe_float(value: Any) -> Optional[float]:
     if value is None:
         return None
     if isinstance(value, (int, float)):
@@ -82,7 +108,7 @@ def sanitize_text(text: str, max_chars: int) -> str:
     return text[:max_chars]
 
 
-def load_feature_columns(schema_path: str) -> list[str]:
+def load_feature_columns(schema_path: str) -> List[str]:
     path = Path(schema_path)
     if not path.exists():
         return DEFAULT_FEATURES
@@ -92,14 +118,14 @@ def load_feature_columns(schema_path: str) -> list[str]:
     return cols if cols else DEFAULT_FEATURES
 
 
-def extract_json_block(text: str) -> dict[str, Any]:
+def extract_json_block(text: str) -> Dict[str, Any]:
     match = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if not match:
         raise ValueError("Could not parse JSON from model response.")
     return json.loads(match.group(0))
 
 
-def append_eval_row(eval_log_path: str, row: dict[str, Any]) -> None:
+def append_eval_row(eval_log_path: str, row: Dict[str, Any]) -> None:
     path = Path(eval_log_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -140,7 +166,7 @@ def publish_custom_metric(
     project_id: str,
     metric_suffix: str,
     value: float,
-    labels: dict[str, str] | None = None,
+    labels: Optional[Dict[str, str]] = None,
 ) -> None:
     if not project_id:
         return
@@ -163,11 +189,11 @@ def publish_custom_metric(
 
 
 def normalize_and_validate_features(
-    raw_features: dict[str, Any],
-    required_features: list[str],
-) -> tuple[dict[str, float], list[str]]:
-    normalized: dict[str, float] = {}
-    missing: list[str] = []
+    raw_features: Dict[str, Any],
+    required_features: List[str],
+) -> Tuple[Dict[str, float], List[str]]:
+    normalized: Dict[str, float] = {}
+    missing: List[str] = []
 
     extra_keys = set(raw_features.keys()) - set(required_features)
     if extra_keys:
@@ -188,6 +214,91 @@ def normalize_and_validate_features(
     return normalized, missing
 
 
+def clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def default_manual_value(feature: str) -> float:
+    now = datetime.now(timezone.utc)
+    defaults = {
+        "Year": float(now.year),
+        "Month": float(now.month),
+        "Day": 1.0,
+        "Inflation Rate": 2.5,
+        "Unemployment Rate": 4.0,
+        "Real GDP (Percent Change)": 2.0,
+    }
+    return defaults.get(feature, 0.0)
+
+
+def load_feature_priors(priors_path: str) -> Tuple[Dict[str, float], Dict[str, float]]:
+    path = Path(priors_path)
+    if not path.exists():
+        return {}, {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        latest = payload.get("latest_values", {}) or {}
+        median = payload.get("median_values", {}) or {}
+        return latest, median
+    except Exception:
+        return {}, {}
+
+
+def fill_missing_with_hierarchy(
+    provided: Dict[str, float],
+    missing_features: List[str],
+    latest_values: Dict[str, float],
+    median_values: Dict[str, float],
+) -> Tuple[Dict[str, float], Dict[str, str]]:
+    completed = dict(provided)
+    source_by_feature: Dict[str, str] = {}
+    for feature in missing_features:
+        low, high = FEATURE_RANGES.get(feature, (-100.0, 100.0))
+        if feature in latest_values and safe_float(latest_values.get(feature)) is not None:
+            completed[feature] = clamp(float(latest_values[feature]), low, high)
+            source_by_feature[feature] = "latest_observed"
+        elif feature in median_values and safe_float(median_values.get(feature)) is not None:
+            completed[feature] = clamp(float(median_values[feature]), low, high)
+            source_by_feature[feature] = "historical_median"
+        else:
+            completed[feature] = clamp(default_manual_value(feature), low, high)
+            source_by_feature[feature] = "static_default"
+    return completed, source_by_feature
+
+
+def confidence_label(
+    missing_pct: float,
+    extraction_success: int,
+) -> str:
+    score = max(0.0, 1.0 - (missing_pct * 0.7) - (0.2 if extraction_success == 0 else 0.0))
+    if score >= 0.85:
+        return "High"
+    if score >= 0.6:
+        return "Medium"
+    return "Low"
+
+
+def heuristic_extract_from_text(user_message: str, required_features: List[str]) -> Dict[str, Any]:
+    """Best-effort local extraction so manual fallback can be prefilled on LLM/API failures."""
+    result: Dict[str, Any] = {f: None for f in required_features}
+    text = user_message.lower()
+
+    year_match = re.search(r"\b(19\d{2}|20\d{2}|2100)\b", text)
+    if year_match and "Year" in result:
+        result["Year"] = float(year_match.group(1))
+
+    unemp_match = re.search(r"(-?\d+(?:\.\d+)?)\s*%?\s*unemployment", text)
+    if unemp_match and "Unemployment Rate" in result:
+        result["Unemployment Rate"] = float(unemp_match.group(1))
+
+    infl_match = re.search(r"(-?\d+(?:\.\d+)?)\s*%?\s*inflation", text)
+    if infl_match and "Inflation Rate" in result:
+        result["Inflation Rate"] = float(infl_match.group(1))
+
+    return result
+
+
 def enforce_session_limits() -> None:
     now = time.time()
     request_count = st.session_state.get("request_count", 0)
@@ -205,14 +316,14 @@ def enforce_session_limits() -> None:
 
 def extract_features_with_gemini(
     user_message: str,
-    required_features: list[str],
+    required_features: List[str],
     project_id: str,
     region: str,
     model_name: str,
     temperature: float,
     top_p: float,
     max_output_tokens: int,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     vertexai.init(project=project_id, location=region)
     model = GenerativeModel(model_name)
 
@@ -256,7 +367,7 @@ def call_vertex_endpoint(
     project_id: str,
     region: str,
     endpoint_id: str,
-    features: dict[str, Any],
+    features: Dict[str, Any],
 ) -> float:
     client = aiplatform.gapic.PredictionServiceClient(
         client_options={"api_endpoint": f"{region}-aiplatform.googleapis.com"}
@@ -276,7 +387,7 @@ def call_vertex_endpoint(
 
 def explain_prediction(
     prediction: float,
-    features: dict[str, Any],
+    features: Dict[str, Any],
     project_id: str,
     region: str,
     model_name: str,
@@ -320,6 +431,8 @@ def initialize_state() -> None:
         st.session_state.last_interaction_id = ""
     if "rated_interactions" not in st.session_state:
         st.session_state.rated_interactions = set()
+    if "manual_needed" not in st.session_state:
+        st.session_state.manual_needed = False
 
 
 initialize_state()
@@ -345,6 +458,11 @@ MONITORING_METRIC_PREFIX = os.environ.get(
     "MONITORING_METRIC_PREFIX",
     "custom.googleapis.com/genai/fed_rate_copilot",
 ).rstrip("/")
+FEATURE_PRIORS_PATH = os.environ.get("FEATURE_PRIORS_PATH", "model/feature_priors.json")
+AUTO_IMPUTE_MAX_MISSING_PCT = float(
+    os.environ.get("AUTO_IMPUTE_MAX_MISSING_PCT", str(DEFAULT_AUTO_IMPUTE_MAX_MISSING_PCT))
+)
+LATEST_VALUES, MEDIAN_VALUES = load_feature_priors(FEATURE_PRIORS_PATH)
 required_features = load_feature_columns(schema_path)
 
 with st.sidebar:
@@ -370,7 +488,7 @@ if not endpoint_id:
     st.stop()
 
 st.markdown(
-    "<p class='small-note'>Tip: If fields are missing, use Manual Inputs below.</p>",
+    "<p class='small-note'>Tip: If fields are missing, the app auto-fills safe defaults and proceeds.</p>",
     unsafe_allow_html=True,
 )
 
@@ -398,7 +516,7 @@ if user_text:
         extraction_success = 0
         prediction_success = 0
         missing = required_features
-        features: dict[str, Any] = {}
+        features: Dict[str, Any] = {}
         error_text = ""
         interaction_id = ""
 
@@ -408,27 +526,37 @@ if user_text:
                 f"{user_text}:{time.time()}".encode("utf-8")
             ).hexdigest()[:20]
 
-            t_extract = time.perf_counter()
-            extracted = extract_features_with_gemini(
-                user_message=user_text,
-                required_features=required_features,
-                project_id=project_id,
-                region=region,
-                model_name=gemini_model,
-                temperature=temperature,
-                top_p=top_p,
-                max_output_tokens=max_output_tokens,
-            )
-            extract_ms = (time.perf_counter() - t_extract) * 1000.0
-            extraction_success = 1
-            st.session_state.last_extraction = extracted
+            assumptions: List[str] = []
+            raw_features: Dict[str, Any] = {}
+            try:
+                t_extract = time.perf_counter()
+                extracted = extract_features_with_gemini(
+                    user_message=user_text,
+                    required_features=required_features,
+                    project_id=project_id,
+                    region=region,
+                    model_name=gemini_model,
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_output_tokens=max_output_tokens,
+                )
+                extract_ms = (time.perf_counter() - t_extract) * 1000.0
+                extraction_success = 1
+                st.session_state.last_extraction = extracted
+                raw_features = extracted.get("features", {})
+                assumptions = extracted.get("assumptions", [])
+            except Exception:
+                raw_features = heuristic_extract_from_text(user_text, required_features)
+                assumptions = [
+                    "Could not fully parse prompt; applied heuristic extraction and defaults.",
+                ]
+                st.session_state.last_extraction = {"features": raw_features}
 
-            raw_features = extracted.get("features", {})
             if not isinstance(raw_features, dict):
-                raise ValueError("Invalid extraction format from model.")
+                raw_features = heuristic_extract_from_text(user_text, required_features)
+                assumptions.append("Extraction format was invalid; used fallback parser.")
 
             features, missing = normalize_and_validate_features(raw_features, required_features)
-            assumptions = extracted.get("assumptions", [])
 
             st.markdown("**Extracted Inputs**")
             st.json(features if features else raw_features)
@@ -439,21 +567,33 @@ if user_text:
                     st.markdown(f"- {sanitize_text(str(assumption), 180)}")
 
             if missing:
-                question = sanitize_text(
-                    str(extracted.get("clarifying_question", "I need a few more values.")),
-                    240,
+                missing_pct = len(missing) / max(len(required_features), 1)
+                if missing_pct > AUTO_IMPUTE_MAX_MISSING_PCT:
+                    raise ValueError(
+                        f"Too many missing features to infer safely ({len(missing)}/{len(required_features)})."
+                    )
+                features, fill_sources = fill_missing_with_hierarchy(
+                    features,
+                    missing,
+                    LATEST_VALUES,
+                    MEDIAN_VALUES,
                 )
-                content = f"I need more info before predicting. {question} Missing: {', '.join(missing)}"
-                st.warning(content)
-                st.session_state.chat.append({"role": "assistant", "content": content})
-            else:
-                t_predict = time.perf_counter()
-                prediction = call_vertex_endpoint(project_id, region, endpoint_id, features)
-                predict_ms = (time.perf_counter() - t_predict) * 1000.0
-                prediction_success = 1
-                prediction_value = prediction
+                source_summary = ", ".join([f"{k}: {v}" for k, v in fill_sources.items()])
+                assumptions.append(f"Auto-filled missing features via hierarchy: {source_summary}")
+                st.info(f"Auto-filled missing features: {', '.join(missing)}")
 
-                t_explain = time.perf_counter()
+            current_missing_pct = len(missing) / max(len(required_features), 1)
+            conf = confidence_label(current_missing_pct, extraction_success)
+            st.caption(f"Prediction confidence: {conf} (missing before imputation: {current_missing_pct:.0%})")
+
+            t_predict = time.perf_counter()
+            prediction = call_vertex_endpoint(project_id, region, endpoint_id, features)
+            predict_ms = (time.perf_counter() - t_predict) * 1000.0
+            prediction_success = 1
+            prediction_value = prediction
+
+            t_explain = time.perf_counter()
+            try:
                 explanation = explain_prediction(
                     prediction=prediction,
                     features=features,
@@ -464,18 +604,30 @@ if user_text:
                     top_p=top_p,
                     max_output_tokens=max_output_tokens,
                 )
-                explain_ms = (time.perf_counter() - t_explain) * 1000.0
-
-                response_md = (
-                    f"### Predicted Federal Funds Target Rate: **{prediction:.3f}%**\n\n"
-                    f"{explanation}"
+            except Exception as explain_exc:
+                assumptions.append(
+                    "LLM explanation unavailable; returned numeric prediction only."
                 )
-                st.markdown(response_md)
-                st.session_state.chat.append({"role": "assistant", "content": response_md})
-                st.session_state.last_interaction_id = interaction_id
+                explanation = (
+                    "The numeric prediction was generated successfully. "
+                    f"Explanation model call failed: {sanitize_text(str(explain_exc), 140)}"
+                )
+            explain_ms = (time.perf_counter() - t_explain) * 1000.0
+
+            response_md = (
+                f"### Predicted Federal Funds Target Rate: **{prediction:.3f}%**\n\n"
+                f"{explanation}"
+            )
+            st.markdown(response_md)
+            st.session_state.chat.append({"role": "assistant", "content": response_md})
+            st.session_state.last_interaction_id = interaction_id
+            st.session_state.manual_needed = False
         except Exception as exc:
             error_text = str(exc)
-            user_error = "Request could not be processed. Check inputs and try again."
+            user_error = (
+                "Request could not be processed automatically. "
+                f"Reason: {sanitize_text(error_text, 180)}."
+            )
             st.error(user_error)
             st.session_state.chat.append({"role": "assistant", "content": user_error})
         finally:
@@ -565,83 +717,107 @@ if last_interaction_id and last_interaction_id not in st.session_state.rated_int
             st.session_state.rated_interactions.add(last_interaction_id)
             st.success("Feedback captured.")
 
-with st.expander("Manual Inputs (Fallback)", expanded=False):
-    st.write("Enter features directly and run prediction.")
-    manual: dict[str, float] = {}
-    manual_cols = st.columns(2)
-    for idx, feature in enumerate(required_features):
-        default = 0.0
-        if st.session_state.last_extraction:
-            extracted_value = st.session_state.last_extraction.get("features", {}).get(feature)
-            maybe_value = safe_float(extracted_value)
-            default = maybe_value if maybe_value is not None else 0.0
-        with manual_cols[idx % 2]:
-            manual[feature] = st.number_input(feature, value=float(default), step=0.1, format="%.4f")
+if st.session_state.manual_needed:
+    with st.expander("Manual Inputs (Fallback)", expanded=True):
+        st.write("Enter features directly and run prediction.")
+        manual: Dict[str, float] = {}
+        manual_cols = st.columns(2)
+        for idx, feature in enumerate(required_features):
+            low, high = FEATURE_RANGES.get(feature, (-100.0, 100.0))
+            default = default_manual_value(feature)
+            if st.session_state.last_extraction:
+                extracted_value = st.session_state.last_extraction.get("features", {}).get(feature)
+                maybe_value = safe_float(extracted_value)
+                if maybe_value is not None:
+                    default = maybe_value
+            default = clamp(default, low, high)
+            with manual_cols[idx % 2]:
+                if feature in INTEGER_FEATURES:
+                    manual_value = st.number_input(
+                        feature,
+                        min_value=int(low),
+                        max_value=int(high),
+                        value=int(round(default)),
+                        step=1,
+                        format="%d",
+                    )
+                    manual[feature] = float(manual_value)
+                else:
+                    manual_value = st.number_input(
+                        feature,
+                        min_value=float(low),
+                        max_value=float(high),
+                        value=float(default),
+                        step=0.1,
+                        format="%.4f",
+                    )
+                    manual[feature] = float(manual_value)
 
-    if st.button("Predict From Manual Inputs", type="primary"):
-        t0 = time.perf_counter()
-        error_text = ""
-        try:
-            manual_validated, manual_missing = normalize_and_validate_features(manual, required_features)
-            if manual_missing:
-                raise ValueError(f"Missing required fields: {manual_missing}")
+        if st.button("Predict From Manual Inputs", type="primary"):
+            t0 = time.perf_counter()
+            error_text = ""
+            try:
+                manual_validated, manual_missing = normalize_and_validate_features(manual, required_features)
+                if manual_missing:
+                    raise ValueError(f"Missing required fields: {manual_missing}")
 
-            pred = call_vertex_endpoint(project_id, region, endpoint_id, manual_validated)
-            st.success(f"Predicted Federal Funds Target Rate: {pred:.3f}%")
-            append_eval_row(
-                eval_log_path,
-                {
-                    "ts_utc": datetime.now(timezone.utc).isoformat(),
-                    "event_type": "manual",
-                    "interaction_id": "",
-                    "prompt_hash": "manual",
-                    "prompt_excerpt": "[manual-input]",
-                    "required_count": len(required_features),
-                    "missing_count": 0,
-                    "missing_pct": 0.0,
-                    "extraction_success": 1,
-                    "prediction_success": 1,
-                    "prediction_value": pred,
-                    "extract_ms": 0.0,
-                    "predict_ms": round((time.perf_counter() - t0) * 1000.0, 2),
-                    "explain_ms": 0.0,
-                    "total_ms": round((time.perf_counter() - t0) * 1000.0, 2),
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    "max_output_tokens": max_output_tokens,
-                    "missing_features": "[]",
-                    "features_json": json.dumps(manual_validated),
-                    "rating": "",
-                    "error": "",
-                },
-            )
-        except Exception as exc:
-            error_text = str(exc)
-            st.error("Manual prediction failed. Please check values and try again.")
-            append_eval_row(
-                eval_log_path,
-                {
-                    "ts_utc": datetime.now(timezone.utc).isoformat(),
-                    "event_type": "manual",
-                    "interaction_id": "",
-                    "prompt_hash": "manual",
-                    "prompt_excerpt": "[manual-input]",
-                    "required_count": len(required_features),
-                    "missing_count": 0,
-                    "missing_pct": 0.0,
-                    "extraction_success": 1,
-                    "prediction_success": 0,
-                    "prediction_value": None,
-                    "extract_ms": 0.0,
-                    "predict_ms": round((time.perf_counter() - t0) * 1000.0, 2),
-                    "explain_ms": 0.0,
-                    "total_ms": round((time.perf_counter() - t0) * 1000.0, 2),
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    "max_output_tokens": max_output_tokens,
-                    "missing_features": "[]",
-                    "features_json": json.dumps(manual),
-                    "rating": "",
-                    "error": error_text[:240],
-                },
-            )
+                pred = call_vertex_endpoint(project_id, region, endpoint_id, manual_validated)
+                st.success(f"Predicted Federal Funds Target Rate: {pred:.3f}%")
+                st.session_state.manual_needed = False
+                append_eval_row(
+                    eval_log_path,
+                    {
+                        "ts_utc": datetime.now(timezone.utc).isoformat(),
+                        "event_type": "manual",
+                        "interaction_id": "",
+                        "prompt_hash": "manual",
+                        "prompt_excerpt": "[manual-input]",
+                        "required_count": len(required_features),
+                        "missing_count": 0,
+                        "missing_pct": 0.0,
+                        "extraction_success": 1,
+                        "prediction_success": 1,
+                        "prediction_value": pred,
+                        "extract_ms": 0.0,
+                        "predict_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                        "explain_ms": 0.0,
+                        "total_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                        "temperature": temperature,
+                        "top_p": top_p,
+                        "max_output_tokens": max_output_tokens,
+                        "missing_features": "[]",
+                        "features_json": json.dumps(manual_validated),
+                        "rating": "",
+                        "error": "",
+                    },
+                )
+            except Exception as exc:
+                error_text = str(exc)
+                st.error(f"Manual prediction failed: {sanitize_text(error_text, 180)}")
+                append_eval_row(
+                    eval_log_path,
+                    {
+                        "ts_utc": datetime.now(timezone.utc).isoformat(),
+                        "event_type": "manual",
+                        "interaction_id": "",
+                        "prompt_hash": "manual",
+                        "prompt_excerpt": "[manual-input]",
+                        "required_count": len(required_features),
+                        "missing_count": 0,
+                        "missing_pct": 0.0,
+                        "extraction_success": 1,
+                        "prediction_success": 0,
+                        "prediction_value": None,
+                        "extract_ms": 0.0,
+                        "predict_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                        "explain_ms": 0.0,
+                        "total_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                        "temperature": temperature,
+                        "top_p": top_p,
+                        "max_output_tokens": max_output_tokens,
+                        "missing_features": "[]",
+                        "features_json": json.dumps(manual),
+                        "rating": "",
+                        "error": error_text[:240],
+                    },
+                )

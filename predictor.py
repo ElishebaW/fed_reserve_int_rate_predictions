@@ -19,6 +19,7 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 model = None
 feature_columns: list[str] = []
+startup_error = None
 
 
 def _split_gcs_uri(uri: str) -> tuple[str, str]:
@@ -72,6 +73,17 @@ def load_artifacts() -> None:
     feature_columns = cols
 
 
+def initialize_server() -> None:
+    global startup_error
+    try:
+        load_artifacts()
+        startup_error = None
+        print("Model artifacts loaded successfully.")
+    except Exception as exc:
+        startup_error = str(exc)
+        print(f"Model artifact initialization failed: {startup_error}")
+
+
 def parse_instances(payload: dict[str, Any]) -> pd.DataFrame:
     if "instances" not in payload:
         raise ValueError("Request must include 'instances'.")
@@ -106,7 +118,7 @@ def parse_instances(payload: dict[str, Any]) -> pd.DataFrame:
 @app.get("/health")
 def health():
     if model is None:
-        return jsonify({"status": "error", "message": "Model not loaded"}), 500
+        return jsonify({"status": "error", "message": startup_error or "Model not loaded"}), 500
     return jsonify({"status": "ok"})
 
 
@@ -127,6 +139,10 @@ def predict():
 
 
 if __name__ == "__main__":
-    load_artifacts()
+    initialize_server()
     port = int(os.environ.get("AIP_HTTP_PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
+
+# Load artifacts in the serving process (e.g., Gunicorn workers) at import time.
+initialize_server()
