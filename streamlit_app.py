@@ -392,6 +392,10 @@ def initialize_state() -> None:
         st.session_state.last_interaction_id = ""
     if "rated_interactions" not in st.session_state:
         st.session_state.rated_interactions = set()
+    if "awaiting_clarification" not in st.session_state:
+        st.session_state.awaiting_clarification = False
+    if "clarification_context" not in st.session_state:
+        st.session_state.clarification_context = ""
 
 
 initialize_state()
@@ -421,8 +425,7 @@ required_features = load_feature_columns(schema_path)
 
 with st.sidebar:
     st.header("App Status")
-    st.caption("All model/inference settings are backend-managed.")
-    st.caption(f"Required feature count: {len(required_features)}")
+    st.caption(f"Required features: {required_features}")
 
 st.markdown(
     """
@@ -479,9 +482,16 @@ if user_text:
             raw_features: Dict[str, Any] = {}
             clarifying_question = ""
 
+            inference_prompt = user_text
+            if st.session_state.awaiting_clarification and st.session_state.clarification_context:
+                inference_prompt = (
+                    f"{st.session_state.clarification_context}\n\n"
+                    f"Additional user clarification:\n{user_text}"
+                )
+
             t_extract = time.perf_counter()
             extracted = extract_features_with_gemini(
-                user_message=user_text,
+                user_message=inference_prompt,
                 required_features=required_features,
                 project_id=project_id,
                 region=region,
@@ -509,50 +519,69 @@ if user_text:
                     st.markdown(f"- {sanitize_text(str(assumption), 180)}")
 
             if missing:
+                st.session_state.awaiting_clarification = True
+                st.session_state.clarification_context = inference_prompt
+
+                missing_text = ", ".join(missing)
                 prompt = sanitize_text(clarifying_question, 160)
-                guidance = f" Clarify with: {prompt}" if prompt else ""
-                raise ValueError(
-                    f"Gemini extraction incomplete. Missing required features: {missing}.{guidance}"
-                )
+                if not prompt:
+                    prompt = f"Please provide values for: {missing_text}."
 
-            conf = confidence_label(0.0, extraction_success)
-            st.caption(f"Prediction confidence: {conf} (missing before inference: 0%)")
+                partial_inputs = {k: v for k, v in raw_features.items() if safe_float(v) is not None}
+                if partial_inputs:
+                    st.markdown("**Captured So Far**")
+                    st.json(partial_inputs)
 
-            t_predict = time.perf_counter()
-            prediction = call_vertex_endpoint(project_id, region, endpoint_id, features)
-            predict_ms = (time.perf_counter() - t_predict) * 1000.0
-            prediction_success = 1
-            prediction_value = prediction
+                clarify_md = (
+                    "I need a few more required inputs before I can run inference.\n\n"
+                    f"Missing required features: **{missing_text}**.\n\n"
+                    f"{prompt}"
+                )
+                st.warning(clarify_md)
+                st.session_state.chat.append({"role": "assistant", "content": clarify_md})
+                error_text = "awaiting_user_clarification"
+            else:
+                st.session_state.awaiting_clarification = False
+                st.session_state.clarification_context = ""
 
-            t_explain = time.perf_counter()
-            try:
-                explanation = explain_prediction(
-                    prediction=prediction,
-                    features=features,
-                    project_id=project_id,
-                    region=region,
-                    model_name=gemini_model,
-                    temperature=temperature,
-                    top_p=top_p,
-                    max_output_tokens=max_output_tokens,
-                )
-            except Exception as explain_exc:
-                assumptions.append(
-                    "LLM explanation unavailable; returned numeric prediction only."
-                )
-                explanation = (
-                    "The numeric prediction was generated successfully. "
-                    f"Explanation model call failed: {sanitize_text(str(explain_exc), 140)}"
-                )
-            explain_ms = (time.perf_counter() - t_explain) * 1000.0
+                conf = confidence_label(0.0, extraction_success)
+                st.caption(f"Prediction confidence: {conf} (missing before inference: 0%)")
 
-            response_md = (
-                f"### Predicted Federal Funds Target Rate: **{prediction:.3f}%**\n\n"
-                f"{explanation}"
-            )
-            st.markdown(response_md)
-            st.session_state.chat.append({"role": "assistant", "content": response_md})
-            st.session_state.last_interaction_id = interaction_id
+                t_predict = time.perf_counter()
+                prediction = call_vertex_endpoint(project_id, region, endpoint_id, features)
+                predict_ms = (time.perf_counter() - t_predict) * 1000.0
+                prediction_success = 1
+                prediction_value = prediction
+
+                t_explain = time.perf_counter()
+                try:
+                    explanation = explain_prediction(
+                        prediction=prediction,
+                        features=features,
+                        project_id=project_id,
+                        region=region,
+                        model_name=gemini_model,
+                        temperature=temperature,
+                        top_p=top_p,
+                        max_output_tokens=max_output_tokens,
+                    )
+                except Exception as explain_exc:
+                    assumptions.append(
+                        "LLM explanation unavailable; returned numeric prediction only."
+                    )
+                    explanation = (
+                        "The numeric prediction was generated successfully. "
+                        f"Explanation model call failed: {sanitize_text(str(explain_exc), 140)}"
+                    )
+                explain_ms = (time.perf_counter() - t_explain) * 1000.0
+
+                response_md = (
+                    f"### Predicted Federal Funds Target Rate: **{prediction:.3f}%**\n\n"
+                    f"{explanation}"
+                )
+                st.markdown(response_md)
+                st.session_state.chat.append({"role": "assistant", "content": response_md})
+                st.session_state.last_interaction_id = interaction_id
         except Exception as exc:
             error_text = str(exc)
             user_error = f"Inference failed: {sanitize_text(error_text, 220)}"
