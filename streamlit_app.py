@@ -234,21 +234,26 @@ def validate_extraction_contract(extracted: Dict[str, Any], required_features: L
     if not isinstance(extracted, dict):
         raise ValueError("Gemini extraction payload must be an object.")
 
-    required_top_level = {"features", "missing_features", "assumptions", "clarifying_question"}
-    missing_top_level = sorted(required_top_level - set(extracted.keys()))
-    extra_top_level = sorted(set(extracted.keys()) - required_top_level)
-    if missing_top_level or extra_top_level:
-        raise ValueError(
-            "Gemini extraction schema mismatch "
-            f"(missing={missing_top_level}, extra={extra_top_level})."
-        )
+    # Accept either canonical schema or a legacy flat feature map.
+    if "features" in extracted:
+        features = extracted.get("features")
+        if not isinstance(features, dict):
+            raise ValueError("Gemini field 'features' must be a JSON object.")
 
-    features = extracted["features"]
-    if not isinstance(features, dict):
-        raise ValueError("Gemini field 'features' must be a JSON object.")
+        assumptions = extracted.get("assumptions", [])
+        if not isinstance(assumptions, list):
+            assumptions = []
 
-    feature_keys = set(features.keys())
+        clarifying_question = extracted.get("clarifying_question", "")
+        if not isinstance(clarifying_question, str):
+            clarifying_question = ""
+    else:
+        features = extracted
+        assumptions = ["Extractor returned a flat feature map; normalized automatically."]
+        clarifying_question = ""
+
     required_keys = set(required_features)
+    feature_keys = set(features.keys())
     missing_feature_keys = sorted(required_keys - feature_keys)
     extra_feature_keys = sorted(feature_keys - required_keys)
     if missing_feature_keys or extra_feature_keys:
@@ -256,18 +261,6 @@ def validate_extraction_contract(extracted: Dict[str, Any], required_features: L
             "Gemini feature keys mismatch "
             f"(missing={missing_feature_keys}, extra={extra_feature_keys})."
         )
-
-    missing_features = extracted["missing_features"]
-    if not isinstance(missing_features, list) or not all(isinstance(i, str) for i in missing_features):
-        raise ValueError("Gemini field 'missing_features' must be a list of strings.")
-
-    assumptions = extracted["assumptions"]
-    if not isinstance(assumptions, list) or not all(isinstance(i, str) for i in assumptions):
-        raise ValueError("Gemini field 'assumptions' must be a list of strings.")
-
-    clarifying_question = extracted["clarifying_question"]
-    if not isinstance(clarifying_question, str):
-        raise ValueError("Gemini field 'clarifying_question' must be a string.")
 
     return features, assumptions[:3], clarifying_question.strip()
 
