@@ -401,7 +401,7 @@ def extract_features_with_gemini(
     temperature: float,
     top_p: float,
     max_output_tokens: int,
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], str]:
     vertexai.init(project=project_id, location=region)
     model = GenerativeModel(model_name)
 
@@ -438,8 +438,9 @@ Rules:
         max_output_tokens=max_output_tokens,
     )
     response = model.generate_content(prompt, generation_config=config)
+    raw_text = response.text or ""
     try:
-        return extract_json_block(response.text)
+        return extract_json_block(raw_text), raw_text
     except ValueError:
         recovered = parse_features_from_text(user_message, required_features)
         missing = [f for f in required_features if safe_float(recovered.get(f)) is None]
@@ -450,7 +451,7 @@ Rules:
                 "Gemini did not return JSON; used deterministic parser on user text.",
             ],
             "clarifying_question": "Please provide any remaining missing values.",
-        }
+        }, raw_text
 
 
 def call_vertex_endpoint(
@@ -610,7 +611,7 @@ if user_text:
                 )
 
             t_extract = time.perf_counter()
-            extracted = extract_features_with_gemini(
+            extracted, gemini_raw_text = extract_features_with_gemini(
                 user_message=inference_prompt,
                 required_features=required_features,
                 project_id=project_id,
@@ -632,6 +633,12 @@ if user_text:
 
             st.markdown("**Extracted Inputs**")
             st.json(raw_features)
+
+            with st.expander("Extractor Debug", expanded=False):
+                st.markdown("**Raw Gemini Response**")
+                st.code(sanitize_text(gemini_raw_text, 4000), language="text")
+                st.markdown("**Parsed Extraction Payload**")
+                st.json(extracted)
 
             if assumptions:
                 st.markdown("**Assumptions**")

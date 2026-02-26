@@ -5,8 +5,6 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 
 from google.api_core import exceptions as gax_exceptions
 from google.cloud import aiplatform
-from google.protobuf import json_format
-from google.protobuf import struct_pb2
 
 
 class InferenceContractError(ValueError):
@@ -105,13 +103,12 @@ class VertexInferenceService:
         )
 
     def predict(self, features: Mapping[str, Any]) -> float:
-        value_instance = json_format.ParseDict(dict(features), struct_pb2.Value())
         try:
             response = self.client.predict(
                 request={
                     "endpoint": self.endpoint,
-                    "instances": [value_instance],
-                    "parameters": struct_pb2.Value(),
+                    "instances": [dict(features)],
+                    "parameters": {},
                 },
                 timeout=self.config.timeout_seconds,
             )
