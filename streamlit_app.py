@@ -116,18 +116,29 @@ def load_feature_columns(schema_path: str) -> List[str]:
 
 
 def extract_json_block(text: str) -> Dict[str, Any]:
+    # Be tolerant of markdown fences or extra prose; contract checks run afterward.
     decoder = json.JSONDecoder()
+
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if fence_match:
+        try:
+            parsed = json.loads(fence_match.group(1))
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
     for idx, ch in enumerate(text):
         if ch != "{":
             continue
         try:
-            parsed, end = decoder.raw_decode(text[idx:])
-            trailing = text[idx + end :].strip()
-            if isinstance(parsed, dict) and not trailing:
+            parsed, _ = decoder.raw_decode(text[idx:])
+            if isinstance(parsed, dict):
                 return parsed
         except json.JSONDecodeError:
             continue
-    raise ValueError("Gemini response was not a single valid JSON object.")
+
+    raise ValueError("Gemini response did not include a valid JSON object.")
 
 
 def append_eval_row(eval_log_path: str, row: Dict[str, Any]) -> None:
