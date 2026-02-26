@@ -432,11 +432,19 @@ Rules:
 - Keep assumptions factual and concise.
 - No markdown or commentary outside JSON.
 """
-    config = GenerationConfig(
-        temperature=temperature,
-        top_p=top_p,
-        max_output_tokens=max_output_tokens,
-    )
+    try:
+        config = GenerationConfig(
+            temperature=temperature,
+            top_p=top_p,
+            max_output_tokens=max_output_tokens,
+            response_mime_type="application/json",
+        )
+    except TypeError:
+        config = GenerationConfig(
+            temperature=temperature,
+            top_p=top_p,
+            max_output_tokens=max_output_tokens,
+        )
     response = model.generate_content(prompt, generation_config=config)
     raw_text = response.text or ""
     try:
