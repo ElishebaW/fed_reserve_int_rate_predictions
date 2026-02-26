@@ -11,3 +11,4 @@ google-cloud-storage
 google-cloud-aiplatform
 google-cloud-monitoring
 streamlit
+pytest

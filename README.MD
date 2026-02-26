@@ -120,7 +120,7 @@ streamlit run streamlit_app.py
 
 ### 5) Use the app
 - Ask for a prediction in plain English.
-- If some fields are missing, complete them in **Manual Inputs (Fallback)**.
+- Missing required features now fail fast with an explicit error (no imputation fallback).
 - The app returns the predicted Federal Funds Target Rate and a concise explanation.
 
 ### Backend Inference + Evaluation Settings
@@ -139,3 +139,24 @@ Each request appends a CSV row with:
 - missing features
 - latency (`extract_ms`, `predict_ms`, `explain_ms`, `total_ms`)
 - success flags and prediction value
+
+
+## Production hardening assets
+- `inference_service.py`: strict Vertex inference client + timeout/error mapping.
+- `tests/test_inference_service.py`: unit tests for contract enforcement and timeout handling.
+- `tests/test_predictor.py`: request validation and serving endpoint tests.
+- `evals/run_llm_judge_eval.py`: LLM-as-a-judge extraction quality eval.
+- `evals/extraction_cases.jsonl`: starter eval dataset.
+- `monitoring/model_monitoring_config.yaml`: Vertex drift/skew monitoring template.
+- `monitoring/latency_alert_policy.json`: Cloud Monitoring latency alert template.
+- `docs/cloudflare_gcp_deployment.md`: Cloudflare + GCP secure deployment guidance.
+- `docs/production_execution_plan.md`: phased rollout plan with stability gates.
+
+## Run quality gates
+```bash
+pytest -q
+python evals/run_llm_judge_eval.py \
+  --project-id "$PROJECT_ID" \
+  --region "$REGION" \
+  --schema-path model/feature_columns.json
+```
