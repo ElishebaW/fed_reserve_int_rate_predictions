@@ -204,10 +204,14 @@ def parse_features_from_text(user_message: str, required_features: List[str]) ->
 
     pct_values = [float(m.group(1)) for m in re.finditer(r"(-?\d+(?:\.\d+)?)\s*%", text)]
     if pct_values:
+        # Prefer the most recent percentages in conversational clarifications.
         if "Inflation Rate" in out and out["Inflation Rate"] is None:
-            out["Inflation Rate"] = pct_values[0]
-        if "Unemployment Rate" in out and out["Unemployment Rate"] is None and len(pct_values) > 1:
-            out["Unemployment Rate"] = pct_values[1]
+            out["Inflation Rate"] = pct_values[-1]
+        if "Unemployment Rate" in out and out["Unemployment Rate"] is None:
+            if len(pct_values) > 1:
+                out["Unemployment Rate"] = pct_values[-2]
+            else:
+                out["Unemployment Rate"] = pct_values[-1]
 
     return out
 
@@ -331,18 +335,21 @@ def validate_extraction_contract(extracted: Dict[str, Any], required_features: L
     if not isinstance(extracted, dict):
         raise ValueError("Gemini extraction payload must be an object.")
 
-    required_top_level = {"features", "missing_features", "assumptions", "clarifying_question"}
-    missing_top_level = sorted(required_top_level - set(extracted.keys()))
-    extra_top_level = sorted(set(extracted.keys()) - required_top_level)
-    if missing_top_level or extra_top_level:
-        raise ValueError(
-            "Gemini extraction schema mismatch "
-            f"(missing={missing_top_level}, extra={extra_top_level})."
-        )
-
-    features = extracted["features"]
-    if not isinstance(features, dict):
-        raise ValueError("Gemini field 'features' must be a JSON object.")
+    # Accept either canonical schema or a direct flat feature-map object.
+    if "features" in extracted:
+        features = extracted.get("features")
+        if not isinstance(features, dict):
+            raise ValueError("Gemini field 'features' must be a JSON object.")
+        assumptions = extracted.get("assumptions", [])
+        if not isinstance(assumptions, list):
+            assumptions = []
+        clarifying_question = extracted.get("clarifying_question", "")
+        if not isinstance(clarifying_question, str):
+            clarifying_question = ""
+    else:
+        features = extracted
+        assumptions = ["Extractor returned a flat feature map; normalized automatically."]
+        clarifying_question = ""
 
     feature_keys = set(features.keys())
     required_keys = set(required_features)
@@ -354,23 +361,20 @@ def validate_extraction_contract(extracted: Dict[str, Any], required_features: L
             f"(missing={missing_feature_keys}, extra={extra_feature_keys})."
         )
 
-    missing_features = extracted["missing_features"]
-    if not isinstance(missing_features, list) or not all(isinstance(i, str) for i in missing_features):
-        raise ValueError("Gemini field 'missing_features' must be a list of strings.")
-
-    assumptions = extracted["assumptions"]
-    if not isinstance(assumptions, list) or not all(isinstance(i, str) for i in assumptions):
-        raise ValueError("Gemini field 'assumptions' must be a list of strings.")
-
-    clarifying_question = extracted["clarifying_question"]
-    if not isinstance(clarifying_question, str):
-        raise ValueError("Gemini field 'clarifying_question' must be a string.")
-
     return features, assumptions[:3], clarifying_question.strip()
 
 
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def confidence_label(missing_pct: float, extraction_success: int) -> str:
+    score = max(0.0, 1.0 - (missing_pct * 0.7) - (0.2 if extraction_success == 0 else 0.0))
+    if score >= 0.85:
+        return "High"
+    if score >= 0.6:
+        return "Medium"
+    return "Low"
 
 
 def enforce_session_limits() -> None:
