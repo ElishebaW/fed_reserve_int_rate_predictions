@@ -1,0 +1,47 @@
+display_name: fed-rate-endpoint-monitor
+endpoint: projects/PROJECT_ID/locations/us-central1/endpoints/ENDPOINT_ID
+logging_sampling_strategy:
+  random_sample_config:
+    sample_rate: 0.8
+model_deployment_monitoring_schedule_config:
+  monitor_interval: 3600s
+model_deployment_monitoring_objective_configs:
+  - deployed_model_id: DEPLOYED_MODEL_ID
+    objective_config:
+      training_dataset:
+        gcs_source:
+          uris:
+            - gs://YOUR_BUCKET/monitoring/training_baseline.jsonl
+        data_format: jsonl
+      training_prediction_skew_detection_config:
+        skew_thresholds:
+          Year:
+            value: 0.2
+          Month:
+            value: 0.15
+          Day:
+            value: 0.15
+          Real GDP (Percent Change):
+            value: 0.3
+          Unemployment Rate:
+            value: 0.25
+          Inflation Rate:
+            value: 0.25
+      prediction_drift_detection_config:
+        drift_thresholds:
+          Year:
+            value: 0.2
+          Month:
+            value: 0.15
+          Day:
+            value: 0.15
+          Real GDP (Percent Change):
+            value: 0.3
+          Unemployment Rate:
+            value: 0.25
+          Inflation Rate:
+            value: 0.25
+alert_config:
+  email_alert_config:
+    user_emails:
+      - ml-oncall@YOUR_DOMAIN.com

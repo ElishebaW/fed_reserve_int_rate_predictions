@@ -120,7 +120,7 @@ streamlit run streamlit_app.py
 
 ### 5) Use the app
 - Ask for a prediction in plain English.
-- If some fields are missing, complete them in **Manual Inputs (Fallback)**.
+- Missing required features now fail fast with an explicit error (no imputation fallback).
 - The app returns the predicted Federal Funds Target Rate and a concise explanation.
 
 ### Backend Inference + Evaluation Settings
@@ -129,8 +129,18 @@ Inference parameters and evaluation logging are configured in backend environmen
 ```bash
 export GEMINI_TEMPERATURE="0.2"
 export GEMINI_TOP_P="0.95"
-export GEMINI_MAX_OUTPUT_TOKENS="512"
+export GEMINI_MAX_OUTPUT_TOKENS="256"
 export EVAL_LOG_PATH="eval_logs/chat_eval.csv"
+
+# Throttle + retry controls for 429 mitigation
+export GEMINI_REGION="global"
+export GEMINI_MAX_RETRIES="2"
+export GEMINI_RETRY_BASE_SECONDS="1.0"
+export GEMINI_MIN_CALL_INTERVAL_SECONDS="2.5"
+export EXTRACTION_CACHE_TTL_SECONDS="120"
+
+# Cost control: disable second Gemini call for explanation
+export ENABLE_LLM_EXPLANATION="false"
 ```
 
 Each request appends a CSV row with:
@@ -139,3 +149,30 @@ Each request appends a CSV row with:
 - missing features
 - latency (`extract_ms`, `predict_ms`, `explain_ms`, `total_ms`)
 - success flags and prediction value
+
+
+## Production hardening assets
+- `inference_service.py`: strict Vertex inference client + timeout/error mapping.
+- `tests/test_inference_service.py`: unit tests for contract enforcement and timeout handling.
+- `tests/test_predictor.py`: request validation and serving endpoint tests.
+- `evals/run_llm_judge_eval.py`: LLM-as-a-judge extraction quality eval.
+- `evals/extraction_cases.jsonl`: starter eval dataset.
+- `monitoring/model_monitoring_config.yaml`: Vertex drift/skew monitoring template.
+- `monitoring/latency_alert_policy.json`: Cloud Monitoring latency alert template.
+- `docs/cloudflare_gcp_deployment.md`: Cloudflare + GCP secure deployment guidance.
+- `docs/production_execution_plan.md`: phased rollout plan with stability gates.
+
+## Run quality gates
+```bash
+pytest -q
+python evals/run_llm_judge_eval.py \
+  --project-id "$PROJECT_ID" \
+  --region "$REGION" \
+  --schema-path model/feature_columns.json
+```
+
+
+## Cost hotspots
+- Gemini calls are usually the top variable cost (extraction + optional explanation).
+- Retries on 429 increase token spend when traffic is bursty.
+- Deployed Vertex endpoints also incur serving uptime costs while running, even at low request volume.
