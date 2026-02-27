@@ -724,7 +724,17 @@ for msg in st.session_state.chat:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-with st.expander("Guided Prompt Builder", expanded=False):
+st.markdown(
+    """
+<div style="border:2px solid rgba(15,23,42,0.35); border-radius:12px; padding:0.8rem 1rem; background:rgba(255,255,255,0.85); margin:0.6rem 0 1rem 0;">
+  <div style="font-weight:700; color:#0f172a; margin-bottom:0.35rem;">Start Here: Guided Prompting Recommended</div>
+  <div style="color:#334155; font-size:0.92rem;">For best extraction quality, use the Guided Prompt Builder below and fill all required model features.</div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+with st.expander("Guided Prompt Builder (Recommended)", expanded=True):
     st.caption("Use structured fields to generate a high-quality prompt for extraction.")
     template = (
         "Given Year: <YYYY>, Month: <1-12>, Day: <1-31>, "
@@ -738,7 +748,7 @@ with st.expander("Guided Prompt Builder", expanded=False):
         guided_values[feature] = st.text_input(
             feature,
             key=f"guided_{feature_key(feature)}",
-            placeholder="Enter a numeric value",
+            placeholder="Required: numeric value",
         )
 
     if st.button("Submit Guided Prompt", use_container_width=True):
