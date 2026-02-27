@@ -187,6 +187,26 @@ def sanitize_text(text: str, max_chars: int) -> str:
     return text[:max_chars]
 
 
+def feature_key(feature: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", feature.lower()).strip("_")
+
+
+def build_guided_prompt(values: Dict[str, str]) -> str:
+    ordered = [
+        "Year",
+        "Month",
+        "Day",
+        "Real GDP (Percent Change)",
+        "Unemployment Rate",
+        "Inflation Rate",
+    ]
+    parts = []
+    for feature in ordered:
+        if feature in values and str(values[feature]).strip():
+            parts.append(f"{feature}: {str(values[feature]).strip()}")
+    return "Given " + ", ".join(parts) + ", what is the predicted Federal Funds Target Rate?"
+
+
 def load_feature_columns(schema_path: str) -> List[str]:
     path = Path(schema_path)
     if not path.exists():
@@ -637,6 +657,8 @@ def initialize_state() -> None:
         st.session_state.last_gemini_call_ts = 0.0
     if "extraction_cache" not in st.session_state:
         st.session_state.extraction_cache = {}
+    if "pending_user_text" not in st.session_state:
+        st.session_state.pending_user_text = ""
 
 
 initialize_state()
@@ -702,9 +724,36 @@ for msg in st.session_state.chat:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
+with st.expander("Guided Prompt Builder", expanded=False):
+    st.caption("Use structured fields to generate a high-quality prompt for extraction.")
+    template = (
+        "Given Year: <YYYY>, Month: <1-12>, Day: <1-31>, "
+        "Real GDP (Percent Change): <value>, Unemployment Rate: <value>, "
+        "Inflation Rate: <value>, what is the predicted Federal Funds Target Rate?"
+    )
+    st.code(template, language="text")
+
+    guided_values: Dict[str, str] = {}
+    for feature in required_features:
+        guided_values[feature] = st.text_input(
+            feature,
+            key=f"guided_{feature_key(feature)}",
+            placeholder="Enter a numeric value",
+        )
+
+    if st.button("Submit Guided Prompt", use_container_width=True):
+        missing_guided = [f for f in required_features if not str(guided_values.get(f, "")).strip()]
+        if missing_guided:
+            st.warning(f"Please fill all required fields before submitting: {missing_guided}")
+        else:
+            st.session_state.pending_user_text = build_guided_prompt(guided_values)
+
 user_text = st.chat_input(
     "Ask for a prediction (e.g., 'Given 2026 inflation 2.7 and unemployment 4.1, what rate?')"
 )
+if not user_text and st.session_state.pending_user_text:
+    user_text = st.session_state.pending_user_text
+    st.session_state.pending_user_text = ""
 
 if user_text:
     user_text = sanitize_text(user_text, MAX_INPUT_CHARS)
