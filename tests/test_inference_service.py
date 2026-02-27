@@ -6,15 +6,12 @@ from google.api_core import exceptions as gax_exceptions
 import inference_service as svc
 
 
-class FakePredictionClient:
+class FakeEndpoint:
     def __init__(self, response=None, error=None):
         self._response = response
         self._error = error
 
-    def endpoint_path(self, project: str, location: str, endpoint: str) -> str:
-        return f"projects/{project}/locations/{location}/endpoints/{endpoint}"
-
-    def predict(self, request, timeout):
+    def predict(self, instances, parameters, timeout):
         if self._error is not None:
             raise self._error
         return self._response
@@ -52,9 +49,13 @@ def test_parse_prediction_value_supports_map_payloads():
 
 def test_vertex_service_predict_handles_timeout(monkeypatch):
     timeout_exc = gax_exceptions.DeadlineExceeded("deadline")
-    fake_client = FakePredictionClient(error=timeout_exc)
 
-    monkeypatch.setattr(svc.aiplatform.gapic, "PredictionServiceClient", lambda **_: fake_client)
+    monkeypatch.setattr(svc.aiplatform, "init", lambda **_: None)
+    monkeypatch.setattr(
+        svc.aiplatform,
+        "Endpoint",
+        lambda endpoint_name: FakeEndpoint(error=timeout_exc),
+    )
 
     service = svc.VertexInferenceService(
         svc.VertexEndpointConfig(project_id="p", region="us-central1", endpoint_id="123", timeout_seconds=3)
@@ -66,8 +67,13 @@ def test_vertex_service_predict_handles_timeout(monkeypatch):
 
 def test_vertex_service_predict_parses_prediction(monkeypatch):
     fake_resp = SimpleNamespace(predictions=[{"prediction": 1.1}])
-    fake_client = FakePredictionClient(response=fake_resp)
-    monkeypatch.setattr(svc.aiplatform.gapic, "PredictionServiceClient", lambda **_: fake_client)
+
+    monkeypatch.setattr(svc.aiplatform, "init", lambda **_: None)
+    monkeypatch.setattr(
+        svc.aiplatform,
+        "Endpoint",
+        lambda endpoint_name: FakeEndpoint(response=fake_resp),
+    )
 
     service = svc.VertexInferenceService(
         svc.VertexEndpointConfig(project_id="p", region="us-central1", endpoint_id="123")

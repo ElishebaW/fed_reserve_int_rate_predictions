@@ -88,28 +88,22 @@ class VertexInferenceService:
     def __init__(self, config: VertexEndpointConfig):
         if not config.endpoint_id:
             raise InferenceExecutionError("VERTEX_ENDPOINT_ID is empty.")
+
         self.config = config
-        self.client = aiplatform.gapic.PredictionServiceClient(
-            client_options={"api_endpoint": f"{config.region}-aiplatform.googleapis.com"}
-        )
-        self.endpoint = (
+        self.endpoint_name = (
             config.endpoint_id
             if config.endpoint_id.startswith("projects/")
-            else self.client.endpoint_path(
-                project=config.project_id,
-                location=config.region,
-                endpoint=config.endpoint_id,
-            )
+            else f"projects/{config.project_id}/locations/{config.region}/endpoints/{config.endpoint_id}"
         )
+
+        aiplatform.init(project=config.project_id, location=config.region)
+        self.endpoint = aiplatform.Endpoint(endpoint_name=self.endpoint_name)
 
     def predict(self, features: Mapping[str, Any]) -> float:
         try:
-            response = self.client.predict(
-                request={
-                    "endpoint": self.endpoint,
-                    "instances": [dict(features)],
-                    "parameters": {},
-                },
+            response = self.endpoint.predict(
+                instances=[dict(features)],
+                parameters={},
                 timeout=self.config.timeout_seconds,
             )
         except gax_exceptions.DeadlineExceeded as exc:
@@ -119,7 +113,8 @@ class VertexInferenceService:
         except gax_exceptions.GoogleAPICallError as exc:
             raise InferenceExecutionError(f"Vertex API call failed: {exc}") from exc
 
-        if not response.predictions:
+        predictions = getattr(response, "predictions", None)
+        if not predictions:
             raise InferenceExecutionError("Vertex endpoint returned zero predictions.")
 
-        return parse_prediction_value(response.predictions[0])
+        return parse_prediction_value(predictions[0])
