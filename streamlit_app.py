@@ -38,6 +38,7 @@ FEATURE_RANGES = {
     "Day": (1.0, 31.0),
     "Inflation Rate": (-20.0, 40.0),
     "Unemployment Rate": (0.0, 50.0),
+    "Real GDP (Percent Change)": (-20.0, 20.0),
 }
 st.set_page_config(
     page_title="Fed Rate AI Copilot",
@@ -121,6 +122,64 @@ def safe_float(value: Any) -> Optional[float]:
         return None
 
 
+def extract_feature_value(raw_value: Any, feature: str) -> Optional[float]:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, (int, float)):
+        return float(raw_value)
+
+    text = str(raw_value).lower()
+
+    if feature == "Inflation Rate":
+        patterns = [
+            r"(?:inflation|cpi)\s*[:=]?\s*(-?\d+(?:\.\d+)?)\s*%?",
+            r"(-?\d+(?:\.\d+)?)\s*%?\s*(?:inflation|cpi)",
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, text)
+            if m:
+                return float(m.group(1))
+        return None
+
+    if feature == "Unemployment Rate":
+        patterns = [
+            r"(?:unemployment|jobless)\s*[:=]?\s*(-?\d+(?:\.\d+)?)\s*%?",
+            r"(-?\d+(?:\.\d+)?)\s*%?\s*(?:unemployment|jobless)",
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, text)
+            if m:
+                return float(m.group(1))
+        return None
+
+    if feature == "Real GDP (Percent Change)":
+        # Reject level-like GDP units unless explicit percent-change context is present.
+        has_level_unit = bool(re.search(r"\b(trillion|billion|million|tn|bn|mn)\b", text))
+        has_change_context = bool(re.search(r"\b(percent\s*change|growth|gdp\s*change|gdp\s*growth|%)\b", text))
+        if has_level_unit and not has_change_context:
+            return None
+
+        patterns = [
+            r"(?:real\s+)?gdp(?:\s*\(percent\s*change\))?\s*[:=]?\s*(-?\d+(?:\.\d+)?)\s*%?",
+            r"(-?\d+(?:\.\d+)?)\s*%?\s*(?:real\s+)?gdp(?:\s*\(percent\s*change\))?",
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, text)
+            if m:
+                return float(m.group(1))
+        # If no explicit gdp label but value is already numeric-only, accept it.
+        if re.fullmatch(r"\s*-?\d+(?:\.\d+)?\s*", text):
+            return float(text.strip())
+        return None
+
+    if feature == "Year":
+        m = re.search(r"\b(19\d{2}|20\d{2}|2100)\b", text)
+        if m:
+            return float(m.group(1))
+
+    return safe_float(raw_value)
+
+
 def sanitize_text(text: str, max_chars: int) -> str:
     text = re.sub(r"[\x00-\x1f\x7f]", " ", text)
     text = re.sub(r"<[^>]*>", "", text)
@@ -198,15 +257,19 @@ def parse_features_from_text(user_message: str, required_features: List[str]) ->
         text,
     )
     if not gdp_match:
-        gdp_match = re.search(r"([$]\s*-?\d[\d,]*(?:\.\d+)?)\s*(?:trillion|billion|million|tn|bn|mn)", text)
+        gdp_match = re.search(r"([$]?\s*-?\d[\d,]*(?:\.\d+)?)\s*(?:trillion|billion|million|tn|bn|mn)", text)
     if gdp_match and "Real GDP (Percent Change)" in out:
         out["Real GDP (Percent Change)"] = safe_float(gdp_match.group(0))
 
-    inflation_match = re.search(r"(-?\d+(?:\.\d+)?)\s*%?\s*(?:inflation|cpi)", text)
+    inflation_match = re.search(r"(?:inflation|cpi)\s*[:=]?\s*(-?\d+(?:\.\d+)?)\s*%?", text)
+    if not inflation_match:
+        inflation_match = re.search(r"(-?\d+(?:\.\d+)?)\s*%?\s*(?:inflation|cpi)", text)
     if inflation_match and "Inflation Rate" in out:
         out["Inflation Rate"] = float(inflation_match.group(1))
 
-    unemployment_match = re.search(r"(-?\d+(?:\.\d+)?)\s*%?\s*(?:unemployment|jobless)", text)
+    unemployment_match = re.search(r"(?:unemployment|jobless)\s*[:=]?\s*(-?\d+(?:\.\d+)?)\s*%?", text)
+    if not unemployment_match:
+        unemployment_match = re.search(r"(-?\d+(?:\.\d+)?)\s*%?\s*(?:unemployment|jobless)", text)
     if unemployment_match and "Unemployment Rate" in out:
         out["Unemployment Rate"] = float(unemployment_match.group(1))
 
@@ -325,7 +388,7 @@ def normalize_and_validate_features(
         raise ValueError("Model returned unexpected fields.")
 
     for feature in required_features:
-        val = safe_float(raw_features.get(feature))
+        val = extract_feature_value(raw_features.get(feature), feature)
         if val is None:
             missing.append(feature)
             continue
