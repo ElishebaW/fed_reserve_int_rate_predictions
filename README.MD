@@ -139,3 +139,34 @@ Each request appends a CSV row with:
 - missing features
 - latency (`extract_ms`, `predict_ms`, `explain_ms`, `total_ms`)
 - success flags and prediction value
+
+## Lessons Learned
+- Endpoint bugs can look like extraction bugs: Confirmed the deployed model was nearly constant (~1.088-1.094) even when UI inputs changed, so the issue was not only Streamlit parsing.
+- Strict extractor contracts need robust fallbacks: Gemini occasionally returned partial/non-JSON output, so deterministic parsing and schema normalization were required to keep inference usable.
+- Type/range handling matters for real user phrasing: inputs like `"$24.11 trillion"` can be misinterpreted without explicit numeric normalization and feature-safe bounds.
+- Retry strategy is mandatory for GenAI in production: 429/resource exhausted errors required exponential backoff + jitter + call interval throttling + extraction cache.
+- Global vs regional endpoint choice affects quota behavior: using global where supported reduced some regional pressure, but does not replace retry/throttle controls.
+- SDK/version drift causes avoidable failures: mixing old docs/APIs with newer `google-cloud-aiplatform` and deprecated Gemini SDK paths created fragile behavior.
+- Training/serving parity is critical: local retrained model showed healthy spread while deployed model remained near-constant, proving artifact/version mismatch risk in deployment.
+- Feature selection can collapse model responsiveness: removing overly aggressive selection and retraining on full numeric features improved prediction spread materially.
+- Test harnesses save cost: prompt-sequence and backoff tests reduced manual UI retries and avoided unnecessary paid API calls.
+
+## Next Steps (Next Session)
+1. Deploy the freshly retrained artifact bundle (`model.joblib`, `feature_columns.json`, `model_manifest.json`) to Vertex and verify endpoint points to that exact version.
+2. Run post-deploy smoke tests with fixed scenarios and assert prediction spread is above threshold before promoting.
+3. Add a pre-deploy quality gate in CI/CD:
+   - fail if sensitivity `std` is below threshold,
+   - fail if required features are missing from schema,
+   - fail if model manifest checksum does not match uploaded artifact.
+4. Migrate any remaining deprecated Vertex GenAI SDK usage to the current supported `google-genai` flow before June 24, 2026.
+5. Keep Gemini cost controls enabled by default in production:
+   - extraction cache TTL,
+   - bounded retries,
+   - low-cost model choice for extraction,
+   - explanation generation behind a toggle.
+6. Configure Vertex Model Monitoring baselines and alerting for:
+   - feature drift,
+   - prediction distribution shift,
+   - endpoint latency/error spikes.
+7. Finish Cloudflare frontend deployment with secure GCP auth pattern (prefer Workload Identity Federation over long-lived keys).
+8. Document one canonical “known-good prompt template” in UI and README to reduce malformed user inputs.
