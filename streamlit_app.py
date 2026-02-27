@@ -13,6 +13,7 @@ import streamlit as st
 import vertexai
 from google.cloud import monitoring_v3
 from inference_service import VertexEndpointConfig, VertexInferenceService
+from gemini_backoff import generate_with_backoff
 from vertexai.generative_models import GenerationConfig, GenerativeModel
 from dotenv import load_dotenv
 
@@ -406,17 +407,15 @@ def enforce_gemini_call_interval() -> None:
 
 
 def gemini_generate_with_backoff(model: GenerativeModel, prompt: str, config: GenerationConfig):
-    attempts = 0
-    while True:
-        try:
-            enforce_gemini_call_interval()
-            return model.generate_content(prompt, generation_config=config)
-        except Exception as exc:
-            if attempts >= GEMINI_MAX_RETRIES or not is_retryable_gemini_error(exc):
-                raise
-            sleep_s = (GEMINI_RETRY_BASE_SECONDS * (2 ** attempts)) + random.uniform(0.0, 0.4)
-            time.sleep(sleep_s)
-            attempts += 1
+    return generate_with_backoff(
+        call_fn=lambda: model.generate_content(prompt, generation_config=config),
+        enforce_interval_fn=enforce_gemini_call_interval,
+        is_retryable_fn=is_retryable_gemini_error,
+        sleep_fn=time.sleep,
+        jitter_fn=lambda: random.uniform(0.0, 0.4),
+        max_retries=GEMINI_MAX_RETRIES,
+        base_seconds=GEMINI_RETRY_BASE_SECONDS,
+    )
 
 
 def enforce_session_limits() -> None:
