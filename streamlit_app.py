@@ -10,11 +10,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
-import vertexai
 from google.cloud import monitoring_v3
+from google import genai
+from google.genai import types as genai_types
 from inference_service import VertexEndpointConfig, VertexInferenceService
 from gemini_backoff import generate_with_backoff
-from vertexai.generative_models import GenerationConfig, GenerativeModel
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -489,9 +489,9 @@ def enforce_gemini_call_interval() -> None:
     st.session_state.last_gemini_call_ts = time.time()
 
 
-def gemini_generate_with_backoff(model: GenerativeModel, prompt: str, config: GenerationConfig):
+def gemini_generate_with_backoff(call_fn):
     return generate_with_backoff(
-        call_fn=lambda: model.generate_content(prompt, generation_config=config),
+        call_fn=call_fn,
         enforce_interval_fn=enforce_gemini_call_interval,
         is_retryable_fn=is_retryable_gemini_error,
         sleep_fn=time.sleep,
@@ -516,6 +516,10 @@ def enforce_session_limits() -> None:
     st.session_state.last_request_ts = now
 
 
+def get_genai_client(project_id: str, gemini_region: str):
+    return genai.Client(vertexai=True, project=project_id, location=gemini_region)
+
+
 def extract_features_with_gemini(
     user_message: str,
     required_features: List[str],
@@ -526,8 +530,7 @@ def extract_features_with_gemini(
     top_p: float,
     max_output_tokens: int,
 ) -> Tuple[Dict[str, Any], str]:
-    vertexai.init(project=project_id, location=gemini_region)
-    model = GenerativeModel(model_name)
+    client = get_genai_client(project_id, gemini_region)
 
     prompt = f"""
 You are a strict JSON extractor for macroeconomic model inputs.
@@ -556,20 +559,19 @@ Rules:
 - Keep assumptions factual and concise.
 - No markdown or commentary outside JSON.
 """
-    try:
-        config = GenerationConfig(
-            temperature=temperature,
-            top_p=top_p,
-            max_output_tokens=max_output_tokens,
-            response_mime_type="application/json",
+    config = genai_types.GenerateContentConfig(
+        temperature=temperature,
+        top_p=top_p,
+        max_output_tokens=max_output_tokens,
+        response_mime_type="application/json",
+    )
+    response = gemini_generate_with_backoff(
+        lambda: client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=config,
         )
-    except TypeError:
-        config = GenerationConfig(
-            temperature=temperature,
-            top_p=top_p,
-            max_output_tokens=max_output_tokens,
-        )
-    response = gemini_generate_with_backoff(model, prompt, config)
+    )
     raw_text = response.text or ""
     try:
         return extract_json_block(raw_text), raw_text
@@ -613,8 +615,7 @@ def explain_prediction(
     top_p: float,
     max_output_tokens: int,
 ) -> str:
-    vertexai.init(project=project_id, location=gemini_region)
-    model = GenerativeModel(model_name)
+    client = get_genai_client(project_id, gemini_region)
 
     prompt = f"""
 You are an analyst explaining a model output.
@@ -627,12 +628,18 @@ Give exactly 3 concise bullets:
 3) one uncertainty caveat.
 Do not include links, HTML, or code.
 """
-    config = GenerationConfig(
+    config = genai_types.GenerateContentConfig(
         temperature=temperature,
         top_p=top_p,
         max_output_tokens=max_output_tokens,
     )
-    response = gemini_generate_with_backoff(model, prompt, config)
+    response = gemini_generate_with_backoff(
+        lambda: client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=config,
+        )
+    )
     return sanitize_text(response.text.strip(), MAX_RESPONSE_CHARS)
 
 

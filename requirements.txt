@@ -12,3 +12,4 @@ google-cloud-aiplatform
 google-cloud-monitoring
 streamlit
 pytest
+google-genai
