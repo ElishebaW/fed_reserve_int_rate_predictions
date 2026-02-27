@@ -2,6 +2,7 @@ import csv
 import hashlib
 import json
 import os
+import random
 import re
 import time
 from datetime import datetime, timezone
@@ -23,6 +24,12 @@ DEFAULT_MAX_INPUT_CHARS = 800
 DEFAULT_MAX_RESPONSE_CHARS = 1200
 DEFAULT_MAX_REQUESTS_PER_SESSION = 60
 DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 2.0
+
+DEFAULT_GEMINI_MAX_RETRIES = 4
+DEFAULT_GEMINI_RETRY_BASE_SECONDS = 1.0
+DEFAULT_GEMINI_MIN_CALL_INTERVAL_SECONDS = 1.5
+DEFAULT_EXTRACTION_CACHE_TTL_SECONDS = 90.0
+DEFAULT_ENABLE_LLM_EXPLANATION = False
 
 FEATURE_RANGES = {
     "Year": (1900.0, 2100.0),
@@ -377,6 +384,41 @@ def confidence_label(missing_pct: float, extraction_success: int) -> str:
     return "Low"
 
 
+def is_retryable_gemini_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    retry_markers = [
+        "429",
+        "resource exhausted",
+        "rate limit",
+        "quota",
+        "too many requests",
+    ]
+    return any(marker in text for marker in retry_markers)
+
+
+def enforce_gemini_call_interval() -> None:
+    now = time.time()
+    last_ts = st.session_state.get("last_gemini_call_ts", 0.0)
+    wait_s = GEMINI_MIN_CALL_INTERVAL_SECONDS - (now - last_ts)
+    if wait_s > 0:
+        time.sleep(wait_s)
+    st.session_state.last_gemini_call_ts = time.time()
+
+
+def gemini_generate_with_backoff(model: GenerativeModel, prompt: str, config: GenerationConfig):
+    attempts = 0
+    while True:
+        try:
+            enforce_gemini_call_interval()
+            return model.generate_content(prompt, generation_config=config)
+        except Exception as exc:
+            if attempts >= GEMINI_MAX_RETRIES or not is_retryable_gemini_error(exc):
+                raise
+            sleep_s = (GEMINI_RETRY_BASE_SECONDS * (2 ** attempts)) + random.uniform(0.0, 0.4)
+            time.sleep(sleep_s)
+            attempts += 1
+
+
 def enforce_session_limits() -> None:
     now = time.time()
     request_count = st.session_state.get("request_count", 0)
@@ -445,7 +487,7 @@ Rules:
             top_p=top_p,
             max_output_tokens=max_output_tokens,
         )
-    response = model.generate_content(prompt, generation_config=config)
+    response = gemini_generate_with_backoff(model, prompt, config)
     raw_text = response.text or ""
     try:
         return extract_json_block(raw_text), raw_text
@@ -508,7 +550,7 @@ Do not include links, HTML, or code.
         top_p=top_p,
         max_output_tokens=max_output_tokens,
     )
-    response = model.generate_content(prompt, generation_config=config)
+    response = gemini_generate_with_backoff(model, prompt, config)
     return sanitize_text(response.text.strip(), MAX_RESPONSE_CHARS)
 
 
@@ -529,6 +571,10 @@ def initialize_state() -> None:
         st.session_state.awaiting_clarification = False
     if "clarification_context" not in st.session_state:
         st.session_state.clarification_context = ""
+    if "last_gemini_call_ts" not in st.session_state:
+        st.session_state.last_gemini_call_ts = 0.0
+    if "extraction_cache" not in st.session_state:
+        st.session_state.extraction_cache = {}
 
 
 initialize_state()
@@ -551,6 +597,22 @@ MAX_REQUESTS_PER_SESSION = int(
 MIN_REQUEST_INTERVAL_SECONDS = float(
     os.environ.get("MIN_REQUEST_INTERVAL_SECONDS", str(DEFAULT_MIN_REQUEST_INTERVAL_SECONDS))
 )
+GEMINI_MAX_RETRIES = int(
+    os.environ.get("GEMINI_MAX_RETRIES", str(DEFAULT_GEMINI_MAX_RETRIES))
+)
+GEMINI_RETRY_BASE_SECONDS = float(
+    os.environ.get("GEMINI_RETRY_BASE_SECONDS", str(DEFAULT_GEMINI_RETRY_BASE_SECONDS))
+)
+GEMINI_MIN_CALL_INTERVAL_SECONDS = float(
+    os.environ.get("GEMINI_MIN_CALL_INTERVAL_SECONDS", str(DEFAULT_GEMINI_MIN_CALL_INTERVAL_SECONDS))
+)
+EXTRACTION_CACHE_TTL_SECONDS = float(
+    os.environ.get("EXTRACTION_CACHE_TTL_SECONDS", str(DEFAULT_EXTRACTION_CACHE_TTL_SECONDS))
+)
+ENABLE_LLM_EXPLANATION = os.environ.get(
+    "ENABLE_LLM_EXPLANATION",
+    str(DEFAULT_ENABLE_LLM_EXPLANATION),
+).lower() in {"1", "true", "yes", "on"}
 MONITORING_METRIC_PREFIX = os.environ.get(
     "MONITORING_METRIC_PREFIX",
     "custom.googleapis.com/genai/fed_rate_copilot",
@@ -619,17 +681,30 @@ if user_text:
                     f"Additional user clarification:\n{user_text}"
                 )
 
+            cache_key = hashlib.sha256(inference_prompt.encode("utf-8")).hexdigest()
+            now_ts = time.time()
+            cached = st.session_state.extraction_cache.get(cache_key)
+
             t_extract = time.perf_counter()
-            extracted, gemini_raw_text = extract_features_with_gemini(
-                user_message=inference_prompt,
-                required_features=required_features,
-                project_id=project_id,
-                gemini_region=gemini_region,
-                model_name=gemini_model,
-                temperature=temperature,
-                top_p=top_p,
-                max_output_tokens=max_output_tokens,
-            )
+            if cached and (now_ts - float(cached.get("ts", 0.0)) <= EXTRACTION_CACHE_TTL_SECONDS):
+                extracted = cached["extracted"]
+                gemini_raw_text = cached.get("raw", "")
+            else:
+                extracted, gemini_raw_text = extract_features_with_gemini(
+                    user_message=inference_prompt,
+                    required_features=required_features,
+                    project_id=project_id,
+                    gemini_region=gemini_region,
+                    model_name=gemini_model,
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_output_tokens=max_output_tokens,
+                )
+                st.session_state.extraction_cache[cache_key] = {
+                    "extracted": extracted,
+                    "raw": gemini_raw_text,
+                    "ts": now_ts,
+                }
             extract_ms = (time.perf_counter() - t_extract) * 1000.0
             extraction_success = 1
             st.session_state.last_extraction = extracted
@@ -690,25 +765,28 @@ if user_text:
                 prediction_value = prediction
 
                 t_explain = time.perf_counter()
-                try:
-                    explanation = explain_prediction(
-                        prediction=prediction,
-                        features=features,
-                        project_id=project_id,
-                        gemini_region=gemini_region,
-                        model_name=gemini_model,
-                        temperature=temperature,
-                        top_p=top_p,
-                        max_output_tokens=max_output_tokens,
-                    )
-                except Exception as explain_exc:
-                    assumptions.append(
-                        "LLM explanation unavailable; returned numeric prediction only."
-                    )
-                    explanation = (
-                        "The numeric prediction was generated successfully. "
-                        f"Explanation model call failed: {sanitize_text(str(explain_exc), 140)}"
-                    )
+                if ENABLE_LLM_EXPLANATION:
+                    try:
+                        explanation = explain_prediction(
+                            prediction=prediction,
+                            features=features,
+                            project_id=project_id,
+                            gemini_region=gemini_region,
+                            model_name=gemini_model,
+                            temperature=temperature,
+                            top_p=top_p,
+                            max_output_tokens=max_output_tokens,
+                        )
+                    except Exception as explain_exc:
+                        assumptions.append(
+                            "LLM explanation unavailable; returned numeric prediction only."
+                        )
+                        explanation = (
+                            "The numeric prediction was generated successfully. "
+                            f"Explanation model call failed: {sanitize_text(str(explain_exc), 140)}"
+                        )
+                else:
+                    explanation = "Explanation disabled to reduce cost and avoid Gemini throttling."
                 explain_ms = (time.perf_counter() - t_explain) * 1000.0
 
                 response_md = (

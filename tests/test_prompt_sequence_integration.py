@@ -29,16 +29,19 @@ def test_prompt_sequence_fills_all_required_features():
     assert features["Inflation Rate"] == 5.0
 
 
-def test_prompt_sequence_invokes_predictor_only_when_complete():
+def test_prompt_sequence_invokes_predictor_once_without_error():
     required_features = load_required_features()
-    captured = {}
+    captured = {"calls": 0}
 
     def fake_predictor(features):
+        captured["calls"] += 1
         captured["features"] = features
         return 3.125
 
     pred = infer_from_prompt_sequence(PROMPTS, required_features, fake_predictor)
 
+    # If infer_from_prompt_sequence returns normally, predictor call path had no error.
     assert pred == 3.125
+    assert captured["calls"] == 1
     assert captured["features"]["Year"] == 2028.0
     assert captured["features"]["Real GDP (Percent Change)"] == 24.11
