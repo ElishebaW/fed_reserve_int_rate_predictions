@@ -13,7 +13,6 @@ from helper_functions import (
 )
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.experimental import enable_halving_search_cv  # noqa: F401
-from sklearn.feature_selection import SelectFromModel
 from sklearn.metrics import root_mean_squared_error
 from sklearn.model_selection import HalvingRandomSearchCV, TimeSeriesSplit
 from sklearn.pipeline import Pipeline
@@ -24,11 +23,14 @@ LEAK_COLS = [
     "Federal Funds Lower Target",
     "Effective Federal Funds Rate",
 ]
+REQUIRED_MACRO_FEATURES = {
+    "Real GDP (Percent Change)",
+    "Unemployment Rate",
+    "Inflation Rate",
+}
 
 
 def is_verbose() -> bool:
-    # Local/dev default: verbose. Vertex default: quiet.
-    # Override with TRAIN_VERBOSE=1 or TRAIN_VERBOSE=0.
     env_override = os.environ.get("TRAIN_VERBOSE")
     if env_override is not None:
         return env_override.strip().lower() in {"1", "true", "yes", "on"}
@@ -40,22 +42,19 @@ def log(*args, **kwargs) -> None:
         print(*args, **kwargs)
 
 
+def train_n_jobs() -> int:
+    raw = os.environ.get("TRAIN_N_JOBS", "1").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return 1
+
+
 def build_model_pipeline() -> Pipeline:
     return Pipeline(
         [
             ("preprocessing", make_numeric_pipeline()),
-            (
-                "feature_select",
-                SelectFromModel(
-                    estimator=RandomForestRegressor(
-                        n_estimators=200,
-                        random_state=42,
-                        n_jobs=-1,
-                    ),
-                    threshold="median",
-                ),
-            ),
-            ("random_forest", RandomForestRegressor(random_state=42, n_jobs=-1)),
+            ("random_forest", RandomForestRegressor(random_state=42, n_jobs=train_n_jobs())),
         ]
     )
 
@@ -64,6 +63,11 @@ def build_training_frame(df: pd.DataFrame):
     features, labels, label_mask = get_features_and_labels(df, TARGET_COL)
     features = features.drop(columns=[c for c in LEAK_COLS if c in features.columns])
     numeric_features = select_numeric_features(features)
+
+    missing_required = sorted(REQUIRED_MACRO_FEATURES - set(numeric_features.columns))
+    if missing_required:
+        raise ValueError(f"Missing required macro features in training data: {missing_required}")
+
     x = numeric_features.loc[label_mask]
     y = labels.loc[label_mask]
     return x, y
@@ -83,8 +87,7 @@ def main() -> None:
     x_test, y_test = build_training_frame(test_set)
 
     param_distributions = {
-        "feature_select__threshold": ["median", "1.25*median", "mean"],
-        "random_forest__max_depth": [3, 5, 8, None],
+        "random_forest__max_depth": [3, 5, 8, 12, None],
         "random_forest__min_samples_split": [2, 5, 10, 20],
         "random_forest__min_samples_leaf": [1, 2, 4, 8],
         "random_forest__max_features": ["sqrt", 0.5, None],
@@ -102,7 +105,7 @@ def main() -> None:
         min_resources=100,
         max_resources=1000,
         scoring="neg_root_mean_squared_error",
-        n_jobs=-1,
+        n_jobs=train_n_jobs(),
         random_state=42,
         verbose=1 if is_verbose() else 0,
     )
@@ -113,28 +116,20 @@ def main() -> None:
     log("Best cross-validation score:", halving_search.best_score_)
 
     best_rf = final_model.named_steps["random_forest"]
-    best_preprocessing = final_model.named_steps["preprocessing"]
-    best_selector = final_model.named_steps["feature_select"]
-
-    all_feature_names = best_preprocessing.get_feature_names_out(x_train.columns)
-    selected_mask = best_selector.get_support()
-    selected_feature_names = all_feature_names[selected_mask]
-
     feature_importances = best_rf.feature_importances_
     importance_pairs = sorted(
-        zip(feature_importances, selected_feature_names),
+        zip(feature_importances, x_train.columns.tolist()),
         key=lambda x: x[0],
         reverse=True,
     )
-    log("Selected features:", selected_feature_names.tolist())
-    log("Top feature importances (selected features only):")
+    log("Top feature importances:")
     log(importance_pairs)
 
     final_predictions = final_model.predict(x_test)
     final_rmse = root_mean_squared_error(y_test, final_predictions)
     log("final_test_rmse:", final_rmse)
 
-    model_dir = os.environ.get("AIP_MODEL_DIR", ".")
+    model_dir = os.environ.get("AIP_MODEL_DIR", "model")
     os.makedirs(model_dir, exist_ok=True)
 
     model_path = os.path.join(model_dir, "model.joblib")
