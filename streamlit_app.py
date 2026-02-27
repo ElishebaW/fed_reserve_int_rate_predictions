@@ -396,13 +396,13 @@ def extract_features_with_gemini(
     user_message: str,
     required_features: List[str],
     project_id: str,
-    region: str,
+    gemini_region: str,
     model_name: str,
     temperature: float,
     top_p: float,
     max_output_tokens: int,
 ) -> Tuple[Dict[str, Any], str]:
-    vertexai.init(project=project_id, location=region)
+    vertexai.init(project=project_id, location=gemini_region)
     model = GenerativeModel(model_name)
 
     prompt = f"""
@@ -483,13 +483,13 @@ def explain_prediction(
     prediction: float,
     features: Dict[str, Any],
     project_id: str,
-    region: str,
+    gemini_region: str,
     model_name: str,
     temperature: float,
     top_p: float,
     max_output_tokens: int,
 ) -> str:
-    vertexai.init(project=project_id, location=region)
+    vertexai.init(project=project_id, location=gemini_region)
     model = GenerativeModel(model_name)
 
     prompt = f"""
@@ -535,6 +535,7 @@ initialize_state()
 
 project_id = os.environ.get("PROJECT_ID", "fed-rate-prediction")
 region = os.environ.get("REGION", "us-central1")
+gemini_region = os.environ.get("GEMINI_REGION", "global")
 endpoint_id = os.environ.get("VERTEX_ENDPOINT_ID", "")
 gemini_model = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
 schema_path = os.environ.get("FEATURE_SCHEMA_PATH", "model/feature_columns.json")
@@ -623,7 +624,7 @@ if user_text:
                 user_message=inference_prompt,
                 required_features=required_features,
                 project_id=project_id,
-                region=region,
+                gemini_region=gemini_region,
                 model_name=gemini_model,
                 temperature=temperature,
                 top_p=top_p,
@@ -694,7 +695,7 @@ if user_text:
                         prediction=prediction,
                         features=features,
                         project_id=project_id,
-                        region=region,
+                        gemini_region=gemini_region,
                         model_name=gemini_model,
                         temperature=temperature,
                         top_p=top_p,
