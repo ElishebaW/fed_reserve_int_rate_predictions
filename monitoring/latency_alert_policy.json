@@ -1,0 +1,32 @@
+{
+  "displayName": "Fed Rate Endpoint High Prediction Latency",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "P95 prediction latency > 2s",
+      "conditionThreshold": {
+        "filter": "metric.type=\"aiplatform.googleapis.com/endpoint/prediction_latencies\" resource.type=\"aiplatform.googleapis.com/Endpoint\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "300s",
+            "perSeriesAligner": "ALIGN_PERCENTILE_95",
+            "crossSeriesReducer": "REDUCE_NONE"
+          }
+        ],
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 2000,
+        "duration": "300s",
+        "trigger": {
+          "count": 1
+        }
+      }
+    }
+  ],
+  "alertStrategy": {
+    "autoClose": "1800s"
+  },
+  "enabled": true,
+  "notificationChannels": [
+    "projects/PROJECT_ID/notificationChannels/CHANNEL_ID"
+  ]
+}

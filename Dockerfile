@@ -14,4 +14,4 @@ ENV MODEL_DIR=/app/model
 
 EXPOSE 8080
 
-CMD ["bash", "-lc", "python -c 'import predictor; predictor.load_artifacts()' && gunicorn --bind 0.0.0.0:${AIP_HTTP_PORT:-8080} --workers 1 --threads 8 --timeout 0 predictor:app"]
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${AIP_HTTP_PORT:-8080} --workers 1 --threads 8 --timeout 0 --access-logfile - --error-logfile - predictor:app"]
