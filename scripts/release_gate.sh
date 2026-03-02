@@ -11,6 +11,10 @@ SCHEMA_PATH="${SCHEMA_PATH:-$MODEL_DIR/feature_columns.json}"
 MANIFEST_PATH="${MANIFEST_PATH:-$MODEL_DIR/model_manifest.json}"
 MODEL_PATH="${MODEL_PATH:-$MODEL_DIR/model.joblib}"
 
+CLI_PROJECT_ID="${PROJECT_ID:-}"
+CLI_REGION="${REGION:-}"
+CLI_ENDPOINT_ID="${VERTEX_ENDPOINT_ID:-}"
+
 if [[ -f "$ROOT_DIR/.env" ]]; then
   set -a
   # shellcheck disable=SC1091
@@ -18,9 +22,9 @@ if [[ -f "$ROOT_DIR/.env" ]]; then
   set +a
 fi
 
-PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null || true)}"
-REGION="${REGION:-us-central1}"
-ENDPOINT_ID="${VERTEX_ENDPOINT_ID:-}"
+PROJECT_ID="${CLI_PROJECT_ID:-${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null || true)}}"
+REGION="${CLI_REGION:-${REGION:-us-central1}}"
+ENDPOINT_ID="${CLI_ENDPOINT_ID:-${VERTEX_ENDPOINT_ID:-}}"
 
 usage() {
   cat <<EOF
@@ -133,8 +137,15 @@ PY
 }
 
 require_endpoint_env() {
-  if [[ -z "$PROJECT_ID" || -z "$REGION" || -z "$ENDPOINT_ID" ]]; then
-    echo "PROJECT_ID, REGION, and VERTEX_ENDPOINT_ID are required." >&2
+  local missing=()
+  [[ -z "$PROJECT_ID" ]] && missing+=("PROJECT_ID")
+  [[ -z "$REGION" ]] && missing+=("REGION")
+  [[ -z "$ENDPOINT_ID" ]] && missing+=("VERTEX_ENDPOINT_ID")
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    echo "Missing required env vars: ${missing[*]}" >&2
+    echo "Tip: export vars or pass inline with the command." >&2
+    echo "Example: PROJECT_ID=... REGION=... VERTEX_ENDPOINT_ID=... scripts/release_gate.sh undeploy" >&2
+    echo "Or: scripts/release_gate.sh undeploy <ENDPOINT_ID>" >&2
     exit 1
   fi
 }
@@ -154,7 +165,8 @@ smoke_gate() {
 undeploy_now() {
   require_endpoint_env
   echo "[action] Undeploy endpoint models"
-  "$ROOT_DIR/scripts/vertex_endpoint_control.sh" undeploy
+  PROJECT_ID="$PROJECT_ID" REGION="$REGION" VERTEX_ENDPOINT_ID="$ENDPOINT_ID" \
+    "$ROOT_DIR/scripts/vertex_endpoint_control.sh" undeploy
 }
 
 resolve_model_id() {
