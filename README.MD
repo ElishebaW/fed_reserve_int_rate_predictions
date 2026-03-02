@@ -120,7 +120,7 @@ streamlit run streamlit_app.py
 
 ### 5) Use the app
 - Ask for a prediction in plain English.
-- Missing required features now fail fast with an explicit error (no imputation fallback).
+- If some fields are missing, complete them in **Manual Inputs (Fallback)**.
 - The app returns the predicted Federal Funds Target Rate and a concise explanation.
 
 ### Backend Inference + Evaluation Settings
@@ -129,18 +129,8 @@ Inference parameters and evaluation logging are configured in backend environmen
 ```bash
 export GEMINI_TEMPERATURE="0.2"
 export GEMINI_TOP_P="0.95"
-export GEMINI_MAX_OUTPUT_TOKENS="256"
+export GEMINI_MAX_OUTPUT_TOKENS="512"
 export EVAL_LOG_PATH="eval_logs/chat_eval.csv"
-
-# Throttle + retry controls for 429 mitigation
-export GEMINI_REGION="global"
-export GEMINI_MAX_RETRIES="2"
-export GEMINI_RETRY_BASE_SECONDS="1.0"
-export GEMINI_MIN_CALL_INTERVAL_SECONDS="2.5"
-export EXTRACTION_CACHE_TTL_SECONDS="120"
-
-# Cost control: disable second Gemini call for explanation
-export ENABLE_LLM_EXPLANATION="false"
 ```
 
 Each request appends a CSV row with:
@@ -150,29 +140,98 @@ Each request appends a CSV row with:
 - latency (`extract_ms`, `predict_ms`, `explain_ms`, `total_ms`)
 - success flags and prediction value
 
+## Lessons Learned
+- When the model wasn't producing the correct predictions, it was because the model was not retrained after the feature selection was changed. I had to go back to the original feature selection and project scoping by looking at the original dataset, look at the loss function, and retrain the model.
+- Endpoint bugs can look like extraction bugs: Confirmed the deployed model was nearly constant (~1.088-1.094) even when UI inputs changed, so the issue was not only Streamlit parsing.
+- Strict extractor contracts need robust fallbacks: Gemini occasionally returned partial/non-JSON output, so deterministic parsing and schema normalization were required to keep inference usable.
+- Type/range handling matters for real user phrasing: inputs like `"$24.11 trillion"` can be misinterpreted without explicit numeric normalization and feature-safe bounds.
+- Retry strategy is mandatory for GenAI in production: 429/resource exhausted errors required exponential backoff + jitter + call interval throttling + extraction cache.
+- Global vs regional endpoint choice affects quota behavior: using global where supported reduced some regional pressure, but does not replace retry/throttle controls.
+- SDK/version drift causes avoidable failures: mixing old docs/APIs with newer `google-cloud-aiplatform` and deprecated Gemini SDK paths created fragile behavior.
+- Training/serving parity is critical: local retrained model showed healthy spread while deployed model remained near-constant, proving artifact/version mismatch risk in deployment.
+- Feature selection can collapse model responsiveness: removing overly aggressive selection and retraining on full numeric features improved prediction spread materially.
+- Test harnesses save cost: prompt-sequence and backoff tests reduced manual UI retries and avoided unnecessary paid API calls.
 
-## Production hardening assets
-- `inference_service.py`: strict Vertex inference client + timeout/error mapping.
-- `tests/test_inference_service.py`: unit tests for contract enforcement and timeout handling.
-- `tests/test_predictor.py`: request validation and serving endpoint tests.
-- `evals/run_llm_judge_eval.py`: LLM-as-a-judge extraction quality eval.
-- `evals/extraction_cases.jsonl`: starter eval dataset.
-- `monitoring/model_monitoring_config.yaml`: Vertex drift/skew monitoring template.
-- `monitoring/latency_alert_policy.json`: Cloud Monitoring latency alert template.
-- `docs/cloudflare_gcp_deployment.md`: Cloudflare + GCP secure deployment guidance.
-- `docs/production_execution_plan.md`: phased rollout plan with stability gates.
+## Deployment Gates and Smoke Criteria
+Hard thresholds and pass/fail rules are documented in:
+- `docs/deploy_checklist.md`
 
-## Run quality gates
+Quick commands added for this workflow:
+- `scripts/vertex_endpoint_control.sh` (status/undeploy/deploy endpoint models)
+- `scripts/smoke_test_vertex_endpoint.py` (fixed-scenario prediction spread checks)
+- `scripts/release_gate.sh` (single entrypoint for precheck/smoke/full gate + quick undeploy)
+
+### Release Gate Commands
 ```bash
-pytest -q
-python evals/run_llm_judge_eval.py \
-  --project-id "$PROJECT_ID" \
-  --region "$REGION" \
-  --schema-path model/feature_columns.json
+# Local artifact + schema checks
+./release_gate.sh precheck
+
+# Deploy model; creates endpoint automatically if VERTEX_ENDPOINT_ID is unset
+PROJECT_ID="fed-rate-prediction" REGION="us-central1" MODEL_ID="<MODEL_ID>" \
+./release_gate.sh deploy
+
+# Or deploy by display name (auto-picks latest matching model)
+PROJECT_ID="fed-rate-prediction" REGION="us-central1" MODEL_DISPLAY_NAME="fed-rate-train" \
+./release_gate.sh deploy
+
+# Or fully automatic (picks latest model in project/region)
+PROJECT_ID="fed-rate-prediction" REGION="us-central1" \
+./release_gate.sh deploy
+
+# Recommended: constrain auto-pick to your custom container image to avoid foundation models
+PROJECT_ID="fed-rate-prediction" REGION="us-central1" MODEL_IMAGE_HINT="elisheba/fed-rate-predictions" \
+./release_gate.sh deploy
+
+# Full gate: precheck + smoke test against endpoint
+PROJECT_ID="fed-rate-prediction" REGION="us-central1" VERTEX_ENDPOINT_ID="<ENDPOINT_ID>" \
+./release_gate.sh run
+
+# One-command cost control (undeploy all models from endpoint)
+./release_gate.sh undeploy "<ENDPOINT_ID>"
 ```
 
+### Model Selection Safety (Important)
+- `scripts/release_gate.sh deploy` now avoids accidental deployment of foundation models (for example Gemma) by filtering candidate models using `containerSpec.imageUri`.
+- Default behavior uses `MODEL_IMAGE_HINT="fed-rate"` for auto-selection.
+- For strongest safety, set:
+  - `MODEL_IMAGE_HINT="elisheba/fed-rate-predictions"`
+- If no matching custom model is found, deploy fails fast with a clear error.
 
-## Cost hotspots
-- Gemini calls are usually the top variable cost (extraction + optional explanation).
-- Retries on 429 increase token spend when traffic is bursty.
-- Deployed Vertex endpoints also incur serving uptime costs while running, even at low request volume.
+## Today's Progress (2026-03-02)
+- [x] Defined hard deployment gates and smoke acceptance thresholds in `docs/deploy_checklist.md`.
+- [x] Added endpoint automation scripts for status/deploy/undeploy and endpoint auto-creation.
+- [x] Added smoke test script with 5 fixed scenarios and spread/std/latency assertions.
+- [x] Added unified `scripts/release_gate.sh` for `precheck`, `deploy`, `smoke`, `run`, and `undeploy`.
+- [x] Added automatic model ID resolution by `MODEL_ID`, `MODEL_DISPLAY_NAME`, or latest matching custom image.
+- [x] Added one-command undeploy path for cost control.
+
+## Cost Optimization Strategy (Phased)
+### Why this order
+The fastest low-risk cost reduction is to automate Vertex endpoint undeploy/redeploy first. It prevents idle endpoint spend now without changing app architecture. Cloud Run is still the target serving path once release readiness is higher because request-based billing with min instances at zero is better for bursty traffic.
+
+Batch prediction remains useful for offline jobs, but this app is interactive, so batch does not replace online serving.
+
+### Phase 1: Immediate cost controls (now)
+1. Schedule endpoint undeploy outside active hours.
+2. Redeploy during planned usage windows.
+3. Keep Gemini runtime controls enabled:
+   - cache extraction results,
+   - bounded retries and call pacing,
+   - lower-cost extraction model,
+   - optional explanation toggle.
+
+### Phase 2: Stable release path (next)
+1. Enforce pre-deploy checklist gates (`docs/deploy_checklist.md`).
+2. Deploy artifact bundle (`model.joblib`, `feature_columns.json`, `model_manifest.json`) only when gates pass.
+3. Run smoke tests and require prediction spread thresholds before promotion.
+
+### Phase 3: Cost-optimized serving target (after stability)
+1. Migrate predictor serving from always-on Vertex endpoint to Cloud Run for request-based billing.
+2. Keep Vertex training artifacts and optional rollback endpoint.
+3. Re-evaluate serving platform using real traffic and latency/error SLOs.
+
+## Next Steps (Prioritized)
+4. Migrate any remaining deprecated Vertex GenAI SDK usage before June 24, 2026.
+5. Configure Vertex Model Monitoring baselines/alerts for drift, distribution shift, and latency/error spikes.
+6. Finish Cloudflare frontend deployment with secure GCP auth (prefer Workload Identity Federation over long-lived keys).
+7. Document one canonical “known-good prompt template” in UI and README to reduce malformed user inputs.

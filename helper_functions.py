@@ -18,22 +18,36 @@ def load_interest_rate_data() -> pd.DataFrame:
     """
     Download the Federal Reserve interest rates dataset via kagglehub
     and return a concatenated DataFrame of all CSV files in the package.
+
+    If network resolution fails, fall back to local kagglehub cache.
     """
-    print("Downloading dataset...")
-    dataset_dir = Path(kagglehub.dataset_download("federalreserve/interest-rates"))
-    print(f"Dataset directory: {dataset_dir}")
-    csv_files = sorted(dataset_dir.glob("*.csv"))
-    if not csv_files:
-        raise FileNotFoundError(f"No CSV files found in {dataset_dir}")
+    dataset_dir = None
+    try:
+        print("Downloading dataset...")
+        dataset_dir = Path(kagglehub.dataset_download("federalreserve/interest-rates"))
+        print(f"Dataset directory: {dataset_dir}")
+        csv_files = sorted(dataset_dir.glob("*.csv"))
+        if csv_files:
+            frames = []
+            for csv_path in csv_files:
+                df = pd.read_csv(csv_path)
+                df["source_file"] = csv_path.name
+                frames.append(df)
+            return pd.concat(frames, ignore_index=True)
+    except Exception as exc:
+        print(f"Dataset download failed, trying local cache fallback: {exc}")
 
-    frames = []
-    for csv_path in csv_files:
-        df = pd.read_csv(csv_path)
-        # Track origin file so it's easy to filter/inspect by source.
-        df["source_file"] = csv_path.name
-        frames.append(df)
+    cache_index = Path.home() / ".cache" / "kagglehub" / "datasets" / "federalreserve" / "interest-rates" / "versions" / "1" / "index.csv"
+    if cache_index.exists():
+        print(f"Using local cache file: {cache_index}")
+        df = pd.read_csv(cache_index)
+        df["source_file"] = cache_index.name
+        return df
 
-    return pd.concat(frames, ignore_index=True)
+    raise FileNotFoundError(
+        "Could not load interest-rate dataset from kagglehub or local cache. "
+        f"Last dataset_dir={dataset_dir}"
+    )
 
 
 def shuffle_and_split_data(data, test_ratio):
