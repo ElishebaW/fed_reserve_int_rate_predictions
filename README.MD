@@ -164,30 +164,30 @@ Quick commands added for this workflow:
 ### Release Gate Commands
 ```bash
 # Local artifact + schema checks
-scripts/release_gate.sh precheck
+./release_gate.sh precheck
 
 # Deploy model; creates endpoint automatically if VERTEX_ENDPOINT_ID is unset
 PROJECT_ID="fed-rate-prediction" REGION="us-central1" MODEL_ID="<MODEL_ID>" \
-scripts/release_gate.sh deploy
+./release_gate.sh deploy
 
 # Or deploy by display name (auto-picks latest matching model)
 PROJECT_ID="fed-rate-prediction" REGION="us-central1" MODEL_DISPLAY_NAME="fed-rate-train" \
-scripts/release_gate.sh deploy
+./release_gate.sh deploy
 
 # Or fully automatic (picks latest model in project/region)
 PROJECT_ID="fed-rate-prediction" REGION="us-central1" \
-scripts/release_gate.sh deploy
+./release_gate.sh deploy
 
 # Recommended: constrain auto-pick to your custom container image to avoid foundation models
 PROJECT_ID="fed-rate-prediction" REGION="us-central1" MODEL_IMAGE_HINT="elisheba/fed-rate-predictions" \
-scripts/release_gate.sh deploy
+./release_gate.sh deploy
 
 # Full gate: precheck + smoke test against endpoint
 PROJECT_ID="fed-rate-prediction" REGION="us-central1" VERTEX_ENDPOINT_ID="<ENDPOINT_ID>" \
-scripts/release_gate.sh run
+./release_gate.sh run
 
 # One-command cost control (undeploy all models from endpoint)
-scripts/release_gate.sh undeploy "<ENDPOINT_ID>"
+./release_gate.sh undeploy "<ENDPOINT_ID>"
 ```
 
 ### Model Selection Safety (Important)
@@ -231,6 +231,7 @@ Batch prediction remains useful for offline jobs, but this app is interactive, s
 3. Re-evaluate serving platform using real traffic and latency/error SLOs.
 
 ## Next Steps (Prioritized)
+3. Fix the release gate script to work with the current environment. Undeploy should work with the current environment. Deploy should work with the current environment. Run like this 
 4. Migrate any remaining deprecated Vertex GenAI SDK usage before June 24, 2026.
 5. Configure Vertex Model Monitoring baselines/alerts for drift, distribution shift, and latency/error spikes.
 6. Finish Cloudflare frontend deployment with secure GCP auth (prefer Workload Identity Federation over long-lived keys).
