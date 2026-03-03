@@ -1,0 +1,36 @@
+modelDeploymentMonitoringObjectiveConfigs:
+  - deployedModelId: "__DEPLOYED_MODEL_ID__"
+    objectiveConfig:
+      trainingDataset:
+        gcsSource:
+          uris:
+            - "__TRAINING_BASELINE_URI__"
+        dataFormat: "__BASELINE_FORMAT__"
+      trainingPredictionSkewDetectionConfig:
+        skewThresholds:
+          Year:
+            value: 0.20
+          Month:
+            value: 0.20
+          Day:
+            value: 0.20
+          "Real GDP (Percent Change)":
+            value: 0.30
+          "Unemployment Rate":
+            value: 0.25
+          "Inflation Rate":
+            value: 0.25
+      predictionDriftDetectionConfig:
+        driftThresholds:
+          Year:
+            value: 0.20
+          Month:
+            value: 0.20
+          Day:
+            value: 0.20
+          "Real GDP (Percent Change)":
+            value: 0.30
+          "Unemployment Rate":
+            value: 0.25
+          "Inflation Rate":
+            value: 0.25

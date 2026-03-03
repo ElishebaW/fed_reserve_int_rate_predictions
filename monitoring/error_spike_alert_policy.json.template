@@ -1,0 +1,29 @@
+{
+  "displayName": "Fed Rate Copilot Prediction Success Drop",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Prediction success mean < 0.90 (10m)",
+      "conditionThreshold": {
+        "filter": "metric.type=\"custom.googleapis.com/genai/fed_rate_copilot/prediction_success\" resource.type=\"global\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "300s",
+            "perSeriesAligner": "ALIGN_MEAN",
+            "crossSeriesReducer": "REDUCE_NONE"
+          }
+        ],
+        "comparison": "COMPARISON_LT",
+        "thresholdValue": 0.9,
+        "duration": "600s",
+        "trigger": {
+          "count": 1
+        }
+      }
+    }
+  ],
+  "alertStrategy": {
+    "autoClose": "1800s"
+  },
+  "enabled": true
+}

@@ -3,9 +3,9 @@
   "combiner": "OR",
   "conditions": [
     {
-      "displayName": "P95 prediction latency > 2s",
+      "displayName": "Endpoint P95 prediction latency > 2s (10m)",
       "conditionThreshold": {
-        "filter": "metric.type=\"aiplatform.googleapis.com/endpoint/prediction_latencies\" resource.type=\"aiplatform.googleapis.com/Endpoint\"",
+        "filter": "metric.type=\"aiplatform.googleapis.com/endpoint/prediction_latencies\" resource.type=\"aiplatform.googleapis.com/Endpoint\" resource.label.\"endpoint_id\"=\"__ENDPOINT_ID__\"",
         "aggregations": [
           {
             "alignmentPeriod": "300s",
@@ -15,7 +15,7 @@
         ],
         "comparison": "COMPARISON_GT",
         "thresholdValue": 2000,
-        "duration": "300s",
+        "duration": "600s",
         "trigger": {
           "count": 1
         }
@@ -25,8 +25,5 @@
   "alertStrategy": {
     "autoClose": "1800s"
   },
-  "enabled": true,
-  "notificationChannels": [
-    "projects/PROJECT_ID/notificationChannels/CHANNEL_ID"
-  ]
+  "enabled": true
 }

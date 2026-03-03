@@ -166,20 +166,17 @@ Quick commands added for this workflow:
 # Local artifact + schema checks
 ./release_gate.sh precheck
 
-# Deploy model; creates endpoint automatically if VERTEX_ENDPOINT_ID is unset
+# Deploy model by explicit model id.
+# If VERTEX_ENDPOINT_ID is unset, deploy creates a new endpoint first.
 PROJECT_ID="fed-rate-prediction" REGION="us-central1" MODEL_ID="<MODEL_ID>" \
 ./release_gate.sh deploy
 
-# Or deploy by display name (auto-picks latest matching model)
-PROJECT_ID="fed-rate-prediction" REGION="us-central1" MODEL_DISPLAY_NAME="fed-rate-train" \
+# Or deploy by model display name (picks latest model matching display name)
+PROJECT_ID="fed-rate-prediction" REGION="us-central1" MODEL_DISPLAY_NAME="fed-rate-prediction" \
 ./release_gate.sh deploy
 
 # Or fully automatic (picks latest model in project/region)
 PROJECT_ID="fed-rate-prediction" REGION="us-central1" \
-./release_gate.sh deploy
-
-# Recommended: constrain auto-pick to your custom container image to avoid foundation models
-PROJECT_ID="fed-rate-prediction" REGION="us-central1" MODEL_IMAGE_HINT="elisheba/fed-rate-predictions" \
 ./release_gate.sh deploy
 
 # Full gate: precheck + smoke test against endpoint
@@ -190,19 +187,22 @@ PROJECT_ID="fed-rate-prediction" REGION="us-central1" VERTEX_ENDPOINT_ID="<ENDPO
 ./release_gate.sh undeploy "<ENDPOINT_ID>"
 ```
 
-### Model Selection Safety (Important)
-- `scripts/release_gate.sh deploy` now avoids accidental deployment of foundation models (for example Gemma) by filtering candidate models using `containerSpec.imageUri`.
-- Default behavior uses `MODEL_IMAGE_HINT="fed-rate"` for auto-selection.
-- For strongest safety, set:
-  - `MODEL_IMAGE_HINT="elisheba/fed-rate-predictions"`
-- If no matching custom model is found, deploy fails fast with a clear error.
+### Deploy Behavior
+- `scripts/release_gate.sh deploy` resolves `MODEL_ID` from:
+  - `MODEL_ID` if provided,
+  - else latest model for `MODEL_DISPLAY_NAME` if provided,
+  - else latest model in the project/region.
+- If `VERTEX_ENDPOINT_ID` is not set, deploy creates a new endpoint (default display name: `fed-rate-endpoint`) and then deploys the model.
+- Script prints both resolved ids during deploy:
+  - `MODEL_ID=...`
+  - `VERTEX_ENDPOINT_ID=...`
 
 ## Today's Progress (2026-03-02)
 - [x] Defined hard deployment gates and smoke acceptance thresholds in `docs/deploy_checklist.md`.
 - [x] Added endpoint automation scripts for status/deploy/undeploy and endpoint auto-creation.
 - [x] Added smoke test script with 5 fixed scenarios and spread/std/latency assertions.
 - [x] Added unified `scripts/release_gate.sh` for `precheck`, `deploy`, `smoke`, `run`, and `undeploy`.
-- [x] Added automatic model ID resolution by `MODEL_ID`, `MODEL_DISPLAY_NAME`, or latest matching custom image.
+- [x] Added automatic model ID resolution by `MODEL_ID`, `MODEL_DISPLAY_NAME`, or latest model in region.
 - [x] Added one-command undeploy path for cost control.
 
 ## Cost Optimization Strategy (Phased)
@@ -232,6 +232,7 @@ Batch prediction remains useful for offline jobs, but this app is interactive, s
 
 ## Next Steps (Prioritized)
 4. [x] Migrate any remaining deprecated Vertex GenAI SDK usage (completed March 3, 2026).
-5. Configure Vertex Model Monitoring baselines/alerts for drift, distribution shift, and latency/error spikes.
-6. Finish Cloudflare frontend deployment with secure GCP auth (prefer Workload Identity Federation over long-lived keys).
-7. Document one canonical “known-good prompt template” in UI and README to reduce malformed user inputs.
+5. [x] Configure Vertex Model Monitoring baselines/alerts for drift, distribution shift, and latency/error spikes (completed March 3, 2026). Configuration templates + CLI setup script are committed; activation/validation is deferred until deployment stabilizes for cloud rollout.
+6. Make deploy/undeploy scripts more reliable for iterative testing cycles and cost-safe operations.
+7. Finish Cloudflare frontend deployment with secure GCP auth (prefer Workload Identity Federation over long-lived keys).
+8. Document one canonical “known-good prompt template” in UI and README to reduce malformed user inputs.

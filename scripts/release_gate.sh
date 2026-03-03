@@ -6,7 +6,6 @@ MODEL_DIR="${MODEL_DIR:-$ROOT_DIR/model}"
 STD_THRESHOLD="${STD_THRESHOLD:-0.05}"
 SPREAD_THRESHOLD="${SPREAD_THRESHOLD:-0.10}"
 MAX_LATENCY_MS="${MAX_LATENCY_MS:-4000}"
-MODEL_IMAGE_HINT="${MODEL_IMAGE_HINT:-fed-rate}"
 SCHEMA_PATH="${SCHEMA_PATH:-$MODEL_DIR/feature_columns.json}"
 MANIFEST_PATH="${MANIFEST_PATH:-$MODEL_DIR/model_manifest.json}"
 MODEL_PATH="${MODEL_PATH:-$MODEL_DIR/model.joblib}"
@@ -50,9 +49,13 @@ Threshold env vars:
 
 Deploy env vars:
   MODEL_ID=...
-  MODEL_DISPLAY_NAME=...   # if MODEL_ID is unset, latest match is used
-  MODEL_FILTER=...         # optional extra gcloud filter when auto-selecting latest
-  MODEL_IMAGE_HINT=...     # default: fed-rate, matched against container image URI
+  MODEL_DISPLAY_NAME=...   # if MODEL_ID is unset, latest model for this display name is used
+  ENDPOINT_DISPLAY_NAME=...  # used when creating a new endpoint
+  DISPLAY_NAME=...           # deployed model display name (default: fed-rate-model)
+  MACHINE_TYPE=...           # default: n1-standard-2
+  MIN_REPLICA_COUNT=...      # default: 1
+  MAX_REPLICA_COUNT=...      # default: 1
+  TRAFFIC_SPLIT=...          # default: 0=100
 EOF
 }
 
@@ -170,43 +173,19 @@ undeploy_now() {
 }
 
 resolve_model_id() {
-  local list_filter="${1:-}"
-  local image_hint="${2:-}"
-  local candidate_ids image_uri
-
-  if [[ -n "$list_filter" ]]; then
-    candidate_ids="$(gcloud ai models list \
-      --project="$PROJECT_ID" \
-      --region="$REGION" \
-      --filter="$list_filter" \
-      --sort-by="~createTime" \
-      --limit=50 \
-      --format="value(name.basename())")"
-  else
-    candidate_ids="$(gcloud ai models list \
-      --project="$PROJECT_ID" \
-      --region="$REGION" \
-      --sort-by="~createTime" \
-      --limit=50 \
-      --format="value(name.basename())")"
+  local display_name="${1:-}"
+  local filter=""
+  if [[ -n "$display_name" ]]; then
+    filter="displayName=\"${display_name}\""
   fi
 
-  for candidate in $candidate_ids; do
-    image_uri="$(gcloud ai models describe "$candidate" \
-      --project="$PROJECT_ID" \
-      --region="$REGION" \
-      --format="value(containerSpec.imageUri)" 2>/dev/null || true)"
-    if [[ -z "$image_hint" ]]; then
-      echo "$candidate"
-      return 0
-    fi
-    if [[ "$image_uri" == *"$image_hint"* ]]; then
-      echo "$candidate"
-      return 0
-    fi
-  done
-
-  return 1
+  gcloud ai models list \
+    --project="$PROJECT_ID" \
+    --region="$REGION" \
+    ${filter:+--filter="$filter"} \
+    --sort-by="~createTime" \
+    --limit=1 \
+    --format="value(name.basename())"
 }
 
 deploy_now() {
@@ -217,44 +196,43 @@ deploy_now() {
   fi
 
   local model_id="${MODEL_ID:-}"
-  if [[ -z "$model_id" ]]; then
-    local display_name="${MODEL_DISPLAY_NAME:-}"
-    local extra_filter="${MODEL_FILTER:-}"
-    local filter=""
-    if [[ -n "$display_name" ]]; then
-      filter="displayName=\"${display_name}\""
-      if [[ -n "$extra_filter" ]]; then
-        filter="${filter} AND (${extra_filter})"
-      fi
-      model_id="$(resolve_model_id "$filter" "$MODEL_IMAGE_HINT" || true)"
-      if [[ -z "${model_id// }" ]]; then
-        echo "No matching custom model found for MODEL_DISPLAY_NAME='${display_name}' with MODEL_IMAGE_HINT='${MODEL_IMAGE_HINT}' in ${PROJECT_ID}/${REGION}." >&2
-        echo "Set MODEL_ID explicitly or adjust MODEL_IMAGE_HINT." >&2
-        exit 1
-      fi
-      echo "[info] Resolved MODEL_ID=${model_id} from MODEL_DISPLAY_NAME='${display_name}' and MODEL_IMAGE_HINT='${MODEL_IMAGE_HINT}'"
-    else
-      if [[ -n "$extra_filter" ]]; then
-        filter="$extra_filter"
-      fi
-      model_id="$(resolve_model_id "$filter" "$MODEL_IMAGE_HINT" || true)"
-      if [[ -z "${model_id// }" ]]; then
-        echo "No matching custom model found in ${PROJECT_ID}/${REGION} with MODEL_IMAGE_HINT='${MODEL_IMAGE_HINT}'." >&2
-        echo "Set MODEL_ID explicitly, set MODEL_DISPLAY_NAME, or adjust MODEL_IMAGE_HINT." >&2
-        exit 1
-      fi
-      echo "[info] Resolved MODEL_ID=${model_id} from latest custom model (MODEL_IMAGE_HINT='${MODEL_IMAGE_HINT}')"
+  if [[ -z "${model_id// }" ]]; then
+    model_id="$(resolve_model_id "${MODEL_DISPLAY_NAME:-}" || true)"
+  fi
+  if [[ -z "${model_id// }" ]]; then
+    echo "Unable to resolve MODEL_ID. Set MODEL_ID or MODEL_DISPLAY_NAME and rerun." >&2
+    exit 1
+  fi
+
+  local endpoint_id="${ENDPOINT_ID:-}"
+  if [[ -z "${endpoint_id// }" ]]; then
+    endpoint_id="$(gcloud ai endpoints create \
+      --project="$PROJECT_ID" \
+      --region="$REGION" \
+      --display-name="${ENDPOINT_DISPLAY_NAME:-fed-rate-endpoint}" \
+      --format="value(name.basename())")"
+    if [[ -z "${endpoint_id// }" ]]; then
+      echo "Failed to create endpoint." >&2
+      exit 1
     fi
   fi
 
-  echo "[action] Deploy model (auto-creates endpoint if missing)"
-  if [[ -z "$ENDPOINT_ID" ]]; then
-    PROJECT_ID="$PROJECT_ID" REGION="$REGION" MODEL_ID="$model_id" \
-      "$ROOT_DIR/scripts/vertex_endpoint_control.sh" deploy-auto
-  else
-    PROJECT_ID="$PROJECT_ID" REGION="$REGION" VERTEX_ENDPOINT_ID="$ENDPOINT_ID" MODEL_ID="$model_id" \
-      "$ROOT_DIR/scripts/vertex_endpoint_control.sh" deploy
-  fi
+  echo "[info] MODEL_ID=${model_id}"
+  echo "[info] VERTEX_ENDPOINT_ID=${endpoint_id}"
+  echo "[action] Deploy model to endpoint"
+  gcloud ai endpoints deploy-model "$endpoint_id" \
+    --project="$PROJECT_ID" \
+    --region="$REGION" \
+    --model="$model_id" \
+    --display-name="${DISPLAY_NAME:-fed-rate-model}" \
+    --machine-type="${MACHINE_TYPE:-n1-standard-2}" \
+    --min-replica-count="${MIN_REPLICA_COUNT:-1}" \
+    --max-replica-count="${MAX_REPLICA_COUNT:-1}" \
+    --traffic-split="${TRAFFIC_SPLIT:-0=100}"
+
+  ENDPOINT_ID="$endpoint_id"
+  export VERTEX_ENDPOINT_ID="$ENDPOINT_ID"
+  echo "[done] Exported VERTEX_ENDPOINT_ID=${VERTEX_ENDPOINT_ID}"
 }
 
 main() {
