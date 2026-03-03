@@ -5,8 +5,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List
 
-import vertexai
-from vertexai.generative_models import GenerationConfig, GenerativeModel
+from google import genai
+from google.genai import types as genai_types
 
 
 def load_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -35,7 +35,8 @@ def extract_json_object(text: str) -> Dict[str, Any]:
 
 
 def run_extraction(
-    model: GenerativeModel,
+    client: genai.Client,
+    model_name: str,
     prompt_text: str,
     required_features: List[str],
 ) -> Dict[str, Any]:
@@ -54,15 +55,22 @@ Return ONLY valid JSON:
   "clarifying_question": "single short question"
 }}
 """
-    response = model.generate_content(
-        prompt,
-        generation_config=GenerationConfig(temperature=0.0, top_p=0.1, max_output_tokens=512),
+    response = client.models.generate_content(
+        model=model_name,
+        contents=prompt,
+        config=genai_types.GenerateContentConfig(
+            temperature=0.0,
+            top_p=0.1,
+            max_output_tokens=512,
+            response_mime_type="application/json",
+        ),
     )
     return extract_json_object(response.text)
 
 
 def run_judge(
-    judge_model: GenerativeModel,
+    client: genai.Client,
+    model_name: str,
     user_prompt: str,
     extracted: Dict[str, Any],
     expected_hints: Dict[str, Any],
@@ -92,9 +100,15 @@ Rules:
 - Fail for missing required facts explicitly present in prompt.
 - Fail for fabricated numeric values not supported by prompt.
 """
-    response = judge_model.generate_content(
-        judge_prompt,
-        generation_config=GenerationConfig(temperature=0.0, top_p=0.1, max_output_tokens=400),
+    response = client.models.generate_content(
+        model=model_name,
+        contents=judge_prompt,
+        config=genai_types.GenerateContentConfig(
+            temperature=0.0,
+            top_p=0.1,
+            max_output_tokens=400,
+            response_mime_type="application/json",
+        ),
     )
     return extract_json_object(response.text)
 
@@ -114,9 +128,7 @@ def main() -> None:
     required_features = schema["feature_columns"]
     cases = load_jsonl(Path(args.cases))
 
-    vertexai.init(project=args.project_id, location=args.region)
-    extractor = GenerativeModel(args.extractor_model)
-    judge = GenerativeModel(args.judge_model)
+    client = genai.Client(vertexai=True, project=args.project_id, location=args.region)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,11 +155,11 @@ def main() -> None:
             expected_hints = case.get("expected_hints", {})
 
             t0 = time.perf_counter()
-            extracted = run_extraction(extractor, prompt_text, required_features)
+            extracted = run_extraction(client, args.extractor_model, prompt_text, required_features)
             extract_ms = (time.perf_counter() - t0) * 1000.0
 
             t1 = time.perf_counter()
-            verdict = run_judge(judge, prompt_text, extracted, expected_hints)
+            verdict = run_judge(client, args.judge_model, prompt_text, extracted, expected_hints)
             judge_ms = (time.perf_counter() - t1) * 1000.0
 
             passed = bool(verdict.get("pass", False))
