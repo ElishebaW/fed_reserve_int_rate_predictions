@@ -231,7 +231,7 @@ Batch prediction remains useful for offline jobs, but this app is interactive, s
 3. Re-evaluate serving platform using real traffic and latency/error SLOs.
 
 ## Next Steps (Prioritized)
-4. Migrate any remaining deprecated Vertex GenAI SDK usage before June 24, 2026.
+4. [x] Migrate any remaining deprecated Vertex GenAI SDK usage (completed March 3, 2026).
 5. Configure Vertex Model Monitoring baselines/alerts for drift, distribution shift, and latency/error spikes.
 6. Finish Cloudflare frontend deployment with secure GCP auth (prefer Workload Identity Federation over long-lived keys).
 7. Document one canonical “known-good prompt template” in UI and README to reduce malformed user inputs.
